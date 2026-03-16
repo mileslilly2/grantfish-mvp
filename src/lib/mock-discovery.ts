@@ -28,6 +28,7 @@ type TinyFishRunResponse = {
 type TinyFishStreamEvent = TinyFishRunResponse & {
   type?: unknown;
   purpose?: unknown;
+  duration?: unknown;
   message?: unknown;
 };
 
@@ -54,6 +55,21 @@ function buildKeywords(org: OrgLike): string {
     .filter(Boolean);
 
   return parts.length > 0 ? parts.join(", ") : "arts, youth, education, West Virginia, Appalachia";
+}
+
+function stableNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return undefined;
 }
 
 const LIVE_SOURCES: LiveSource[] = [
@@ -302,7 +318,7 @@ async function runTinyFishSource(source: LiveSource, org: OrgLike) {
     if (eventType === "PROGRESS") {
       const purpose = stableText(event.purpose);
       if (purpose) {
-        addLog(purpose);
+        addLog(purpose, "done", stableNumber(event.duration));
       }
       return false;
     }

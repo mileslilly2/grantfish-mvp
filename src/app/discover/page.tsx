@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type OpportunityRow = {
   id: string;
@@ -20,26 +20,144 @@ type OpportunityRow = {
   notes: string | null;
 };
 
+type Organization = {
+  id: string;
+  name: string;
+  entity_type: string;
+  mission: string;
+  geographies: string[];
+  focus_areas: string[];
+  tax_status: string | null;
+};
+
+type CreateOrganizationForm = {
+  name: string;
+  entity_type: string;
+  mission: string;
+  geographies: string;
+  focus_areas: string;
+  tax_status: string;
+};
+
 export default function DiscoverPage() {
-  const [organizationProfileId, setOrganizationProfileId] = useState(
-    "fdb54db0-6de7-4974-8705-1562bb3c7447"
-  );
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [organizationProfileId, setOrganizationProfileId] = useState("");
   const [loading, setLoading] = useState(false);
+  const [orgLoading, setOrgLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [opportunities, setOpportunities] = useState<OpportunityRow[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
+  const [createOrgForm, setCreateOrgForm] = useState<CreateOrganizationForm>({
+    name: "",
+    entity_type: "nonprofit",
+    mission: "",
+    geographies: "",
+    focus_areas: "",
+    tax_status: "",
+  });
+
+  const selectedOrganization = useMemo(() => {
+    return (
+      organizations.find((org) => org.id === organizationProfileId) ?? null
+    );
+  }, [organizations, organizationProfileId]);
+
+  useEffect(() => {
+    async function loadOrganizations() {
+      try {
+        setOrgLoading(true);
+
+        const res = await fetch("/api/organizations");
+
+        if (!res.ok) {
+          throw new Error("Failed to load organizations");
+        }
+
+        const data: Organization[] = await res.json();
+        setOrganizations(data);
+
+        if (data.length > 0) {
+          setOrganizationProfileId((current) => current || data[0].id);
+        }
+      } catch (err) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to load organizations";
+        setMessage(errorMessage);
+      } finally {
+        setOrgLoading(false);
+      }
+    }
+
+    loadOrganizations();
+  }, []);
 
   useEffect(() => {
     const interval = setInterval(async () => {
-      const res = await fetch("/api/logs");
-      const data = await res.json();
-      setLogs(data);
+      try {
+        const res = await fetch("/api/logs", { cache: "no-store" });
+
+        if (!res.ok) {
+          return;
+        }
+
+        const data = await res.json();
+
+        if (Array.isArray(data)) {
+          const normalizedLogs = data.map((entry) => {
+            if (typeof entry === "string") {
+              return entry;
+            }
+
+            if (
+              entry &&
+              typeof entry === "object" &&
+              "message" in entry &&
+              typeof entry.message === "string"
+            ) {
+              return entry.message;
+            }
+
+            if (
+              entry &&
+              typeof entry === "object" &&
+              "step" in entry &&
+              typeof entry.step === "string"
+            ) {
+              return entry.step;
+            }
+
+            return JSON.stringify(entry);
+          });
+
+          setLogs(normalizedLogs);
+        }
+      } catch {
+        // ignore polling errors
+      }
     }, 500);
 
-    return () => {
-      clearInterval(interval);
-    };
+    return () => clearInterval(interval);
   }, []);
+
+  async function loadOrganizationsAndSelect(newOrgId?: string) {
+    const res = await fetch("/api/organizations");
+
+    if (!res.ok) {
+      throw new Error("Failed to load organizations");
+    }
+
+    const data: Organization[] = await res.json();
+    setOrganizations(data);
+
+    if (newOrgId) {
+      setOrganizationProfileId(newOrgId);
+      return;
+    }
+
+    if (!organizationProfileId && data.length > 0) {
+      setOrganizationProfileId(data[0].id);
+    }
+  }
 
   async function loadOpportunities(orgId: string) {
     const res = await fetch(
@@ -56,6 +174,10 @@ export default function DiscoverPage() {
 
   async function handleScan() {
     try {
+      if (!organizationProfileId) {
+        throw new Error("Please select an organization");
+      }
+
       setLoading(true);
       setMessage("");
       setLogs([]);
@@ -92,6 +214,10 @@ export default function DiscoverPage() {
 
   async function handleLoadExisting() {
     try {
+      if (!organizationProfileId) {
+        throw new Error("Please select an organization");
+      }
+
       setLoading(true);
       setMessage("");
       await loadOpportunities(organizationProfileId);
@@ -105,61 +231,282 @@ export default function DiscoverPage() {
     }
   }
 
+  async function handleCreateOrganization(e: React.FormEvent) {
+    e.preventDefault();
+
+    try {
+      setLoading(true);
+      setMessage("");
+
+      const payload = {
+        name: createOrgForm.name.trim(),
+        entity_type: createOrgForm.entity_type.trim() || "nonprofit",
+        mission: createOrgForm.mission.trim(),
+        geographies: createOrgForm.geographies
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+        focus_areas: createOrgForm.focus_areas
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+        tax_status: createOrgForm.tax_status.trim(),
+      };
+
+      const res = await fetch("/api/organizations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to create organization");
+      }
+
+      await loadOrganizationsAndSelect(data.id);
+
+      setCreateOrgForm({
+        name: "",
+        entity_type: "nonprofit",
+        mission: "",
+        geographies: "",
+        focus_areas: "",
+        tax_status: "",
+      });
+
+      setMessage(`Created organization: ${data.name}`);
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : "Failed to create organization";
+      setMessage(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-white text-black p-8">
-      <div className="max-w-5xl mx-auto space-y-8">
+      <div className="max-w-6xl mx-auto space-y-8">
         <div className="space-y-3">
           <h1 className="text-3xl font-bold">GrantFish Discover</h1>
           <p className="text-sm text-gray-600">
-            Run a grant scan for a nonprofit profile and load matched
+            Run a grant scan for an organization profile and load matched
             opportunities.
           </p>
         </div>
 
-        <div className="border rounded-xl p-4 space-y-4">
-          <label className="block space-y-2">
-            <span className="text-sm font-medium">Organization Profile ID</span>
-            <input
-              className="w-full border rounded-lg px-3 py-2 text-sm"
-              value={organizationProfileId}
-              onChange={(e) => setOrganizationProfileId(e.target.value)}
-              placeholder="Enter organization profile UUID"
-            />
-          </label>
+        <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
+          <div className="border rounded-xl p-4 space-y-4">
+            <label className="block space-y-2">
+              <span className="text-sm font-medium">Select Organization</span>
+              <select
+                className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+                value={organizationProfileId}
+                onChange={(e) => setOrganizationProfileId(e.target.value)}
+                disabled={orgLoading || organizations.length === 0}
+              >
+                {orgLoading ? (
+                  <option value="">Loading organizations...</option>
+                ) : organizations.length === 0 ? (
+                  <option value="">No organizations found</option>
+                ) : (
+                  organizations.map((org) => (
+                    <option key={org.id} value={org.id}>
+                      {org.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
 
-          <div className="flex gap-3">
-            <button
-              onClick={handleScan}
-              disabled={loading || !organizationProfileId}
-              className="rounded-lg bg-black text-white px-4 py-2 text-sm disabled:opacity-50"
-            >
-              {loading ? "Scanning..." : "Scan for Grants"}
-            </button>
+            {selectedOrganization ? (
+              <div className="border rounded-xl p-4 space-y-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Organization Summary
+                </div>
 
-            <button
-              onClick={handleLoadExisting}
-              disabled={loading || !organizationProfileId}
-              className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
-            >
-              Load Saved Opportunities
-            </button>
-          </div>
+                <div className="text-2xl font-bold">
+                  Searching for grants for: {selectedOrganization.name}
+                </div>
 
-          <div className="rounded-xl bg-black px-4 py-3">
-            <div className="max-h-64 overflow-y-auto font-mono text-sm text-green-400">
-              {logs.length === 0 ? (
-                <div>&gt; </div>
+                <div>
+                  <span className="font-medium">Entity Type:</span>{" "}
+                  <span className="text-gray-700">
+                    {selectedOrganization.entity_type || "—"}
+                  </span>
+                </div>
+
+                <div>
+                  <span className="font-medium">Mission:</span>{" "}
+                  {selectedOrganization.mission || "—"}
+                </div>
+
+                <div>
+                  <span className="font-medium">Focus Areas:</span>{" "}
+                  {selectedOrganization.focus_areas.length > 0
+                    ? selectedOrganization.focus_areas.join(", ")
+                    : "—"}
+                </div>
+
+                <div>
+                  <span className="font-medium">Geographies:</span>{" "}
+                  {selectedOrganization.geographies.length > 0
+                    ? selectedOrganization.geographies.join(", ")
+                    : "—"}
+                </div>
+
+                <div>
+                  <span className="font-medium">Tax Status:</span>{" "}
+                  {selectedOrganization.tax_status || "—"}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleScan}
+                disabled={loading || !organizationProfileId}
+                className="rounded-lg bg-black text-white px-4 py-2 text-sm disabled:opacity-50"
+              >
+                {loading ? "Scanning..." : "Scan for Grants"}
+              </button>
+
+              <button
+                onClick={handleLoadExisting}
+                disabled={loading || !organizationProfileId}
+                className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
+              >
+                Load Saved Opportunities
+              </button>
+            </div>
+
+            <div className="rounded-lg bg-black text-green-400 p-3 text-xs font-mono max-h-48 overflow-y-auto min-h-[72px]">
+              {logs.length > 0 ? (
+                logs.map((log, i) => <div key={i}>{">"} {log}</div>)
               ) : (
-                logs.map((log, index) => <div key={index}>&gt; {log}</div>)
+                <div>{">"}</div>
               )}
             </div>
+
+            {message ? (
+              <div className="text-sm rounded-lg bg-gray-100 px-3 py-2">
+                {message}
+              </div>
+            ) : null}
           </div>
 
-          {message ? (
-            <div className="text-sm rounded-lg bg-gray-100 px-3 py-2">
-              {message}
-            </div>
-          ) : null}
+          <div className="border rounded-xl p-4 space-y-4">
+            <div className="text-xl font-semibold">Create Organization</div>
+
+            <form onSubmit={handleCreateOrganization} className="space-y-4">
+              <label className="block space-y-2">
+                <span className="text-sm font-medium">Name</span>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  value={createOrgForm.name}
+                  onChange={(e) =>
+                    setCreateOrgForm((prev) => ({
+                      ...prev,
+                      name: e.target.value,
+                    }))
+                  }
+                  placeholder="Example Nonprofit"
+                  required
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="text-sm font-medium">Entity Type</span>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  value={createOrgForm.entity_type}
+                  onChange={(e) =>
+                    setCreateOrgForm((prev) => ({
+                      ...prev,
+                      entity_type: e.target.value,
+                    }))
+                  }
+                  placeholder="nonprofit"
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="text-sm font-medium">Mission</span>
+                <textarea
+                  className="w-full border rounded-lg px-3 py-2 text-sm min-h-[120px]"
+                  value={createOrgForm.mission}
+                  onChange={(e) =>
+                    setCreateOrgForm((prev) => ({
+                      ...prev,
+                      mission: e.target.value,
+                    }))
+                  }
+                  placeholder="Supports arts and youth programs in Appalachia."
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="text-sm font-medium">
+                  Geographies (comma-separated)
+                </span>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  value={createOrgForm.geographies}
+                  onChange={(e) =>
+                    setCreateOrgForm((prev) => ({
+                      ...prev,
+                      geographies: e.target.value,
+                    }))
+                  }
+                  placeholder="West Virginia, Appalachia"
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="text-sm font-medium">
+                  Focus Areas (comma-separated)
+                </span>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  value={createOrgForm.focus_areas}
+                  onChange={(e) =>
+                    setCreateOrgForm((prev) => ({
+                      ...prev,
+                      focus_areas: e.target.value,
+                    }))
+                  }
+                  placeholder="arts, youth, education"
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="text-sm font-medium">Tax Status</span>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  value={createOrgForm.tax_status}
+                  onChange={(e) =>
+                    setCreateOrgForm((prev) => ({
+                      ...prev,
+                      tax_status: e.target.value,
+                    }))
+                  }
+                  placeholder="501(c)(3)"
+                />
+              </label>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="rounded-lg bg-black text-white px-4 py-2 text-sm disabled:opacity-50"
+              >
+                {loading ? "Saving..." : "Create Organization"}
+              </button>
+            </form>
+          </div>
         </div>
 
         <div className="border rounded-xl overflow-hidden">
@@ -189,8 +536,8 @@ export default function DiscoverPage() {
                       opp.amount_min && opp.amount_max
                         ? `${opp.currency} ${opp.amount_min}–${opp.amount_max}`
                         : opp.amount_min
-                        ? `${opp.currency} ${opp.amount_min}+`
-                        : "—";
+                          ? `${opp.currency} ${opp.amount_min}+`
+                          : "—";
 
                     const deadline = opp.deadline_at
                       ? new Date(opp.deadline_at).toLocaleDateString()
