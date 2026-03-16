@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { addLog } from "@/lib/logStore";
 
 type OrgLike = {
   mission?: string;
@@ -23,6 +24,14 @@ type TinyFishRunResponse = {
   result_json?: unknown;
   error?: unknown;
 };
+
+type TinyFishStreamEvent = TinyFishRunResponse & {
+  type?: unknown;
+  purpose?: unknown;
+  message?: unknown;
+};
+
+type RawOpportunity = Record<string, unknown>;
 
 function getFocusAreas(org: OrgLike): string[] {
   return Array.isArray(org.focus_areas)
@@ -201,7 +210,7 @@ function toNumberOrNull(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function normalizeOpportunity(rawItem: any, source: LiveSource) {
+function normalizeOpportunity(rawItem: RawOpportunity, source: LiveSource) {
   const title = stableText(rawItem.title);
   if (!title) return null;
 
@@ -248,18 +257,18 @@ async function runTinyFishSource(source: LiveSource, org: OrgLike) {
     throw new Error("TINYFISH_API_KEY is missing");
   }
 
-  // 1️⃣ Start the agent run
-  const start = await fetch(`${baseUrl}/v1/automation/run`, {
+  const start = await fetch(`${baseUrl}/v1/automation/run-sse`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-API-Key": apiKey
+      Accept: "text/event-stream",
+      "X-API-Key": apiKey,
     },
     body: JSON.stringify({
       url: source.url,
       goal: source.goal(org),
-      browser_profile: source.browserProfile ?? "lite"
-    })
+      browser_profile: source.browserProfile ?? "lite",
+    }),
   });
 
   if (!start.ok) {
@@ -267,61 +276,94 @@ async function runTinyFishSource(source: LiveSource, org: OrgLike) {
     throw new Error(`${source.name} TinyFish run failed: ${start.status} ${text}`);
   }
 
-  const run = await start.json();
-  const runId = run.id;
-
-  if (!runId) {
-    throw new Error("TinyFish did not return a run ID");
+  if (!start.body) {
+    throw new Error(`${source.name} TinyFish run did not return a stream`);
   }
 
-  // 2️⃣ Poll for completion
-  let result = null;
+  const reader = start.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: unknown = null;
 
-  for (let i = 0; i < 60; i++) {
-    await new Promise((r) => setTimeout(r, 2000));
+  const handleEvent = (rawEvent: string) => {
+    const dataLines = rawEvent
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .filter(Boolean);
 
-    const check = await fetch(`${baseUrl}/v1/automation/run/${runId}`, {
-      headers: {
-        "X-API-Key": apiKey
+    if (dataLines.length === 0) {
+      return false;
+    }
+
+    const event = JSON.parse(dataLines.join("\n")) as TinyFishStreamEvent;
+    const eventType = stableText(event.type);
+
+    if (eventType === "PROGRESS") {
+      const purpose = stableText(event.purpose);
+      if (purpose) {
+        addLog(purpose);
       }
-    });
-
-    if (!check.ok) {
-      continue;
+      return false;
     }
 
-    const status = await check.json();
-
-    if (status.status === "completed") {
-      result = status.result;
-      break;
+    if (eventType === "COMPLETE") {
+      result = event.resultJson ?? event.result_json ?? event.result;
+      return true;
     }
 
-    if (status.status === "failed") {
-      throw new Error(`${source.name} agent failed`);
+    if (eventType === "ERROR") {
+      const message =
+        stableText(event.message) ||
+        stableText(event.error) ||
+        `${source.name} agent failed`;
+      throw new Error(message);
     }
+
+    return false;
+  };
+
+  let done = false;
+
+  while (!done) {
+    const chunk = await reader.read();
+    done = chunk.done;
+    buffer += decoder.decode(chunk.value ?? new Uint8Array(), { stream: !done });
+
+    const parts = buffer.split(/\r?\n\r?\n/);
+    buffer = parts.pop() ?? "";
+
+    for (const part of parts) {
+      if (handleEvent(part)) {
+        done = true;
+        break;
+      }
+    }
+  }
+
+  if (!result && buffer.trim()) {
+    handleEvent(buffer);
   }
 
   if (!result) {
-    throw new Error(`${source.name} timed out`);
+    throw new Error(`${source.name} TinyFish stream ended without a COMPLETE event`);
   }
 
-  // 3️⃣ Extract opportunities
   const payload = result;
 
-  const items = Array.isArray(payload)
-    ? payload
+  const items: RawOpportunity[] = Array.isArray(payload)
+    ? payload as RawOpportunity[]
     : Array.isArray(payload?.opportunities)
-    ? payload.opportunities
+    ? payload.opportunities as RawOpportunity[]
     : [];
 
   return items
-    .map((item: any) => normalizeOpportunity(item, source))
+    .map((item) => normalizeOpportunity(item, source))
     .filter(Boolean);
 }
 
-function dedupeByKey(items: any[]) {
-  const map = new Map<string, any>();
+function dedupeByKey<T extends { dedupeKey: string }>(items: T[]) {
+  const map = new Map<string, T>();
   for (const item of items) {
     map.set(item.dedupeKey, item);
   }

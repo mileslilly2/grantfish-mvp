@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type OpportunityRow = {
   id: string;
@@ -27,6 +27,19 @@ export default function DiscoverPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [opportunities, setOpportunities] = useState<OpportunityRow[]>([]);
+  const [logs, setLogs] = useState<string[]>([]);
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const res = await fetch("/api/logs");
+      const data = await res.json();
+      setLogs(data);
+    }, 500);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, []);
 
   async function loadOpportunities(orgId: string) {
     const res = await fetch(
@@ -45,6 +58,7 @@ export default function DiscoverPage() {
     try {
       setLoading(true);
       setMessage("");
+      setLogs([]);
 
       const res = await fetch("/api/discovery/run", {
         method: "POST",
@@ -129,6 +143,16 @@ export default function DiscoverPage() {
             >
               Load Saved Opportunities
             </button>
+          </div>
+
+          <div className="rounded-xl bg-black px-4 py-3">
+            <div className="max-h-64 overflow-y-auto font-mono text-sm text-green-400">
+              {logs.length === 0 ? (
+                <div>&gt; </div>
+              ) : (
+                logs.map((log, index) => <div key={index}>&gt; {log}</div>)
+              )}
+            </div>
           </div>
 
           {message ? (

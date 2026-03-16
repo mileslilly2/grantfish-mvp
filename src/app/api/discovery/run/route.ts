@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pool } from "@/lib/db";
+import { addLog, clearLogs } from "@/lib/logStore";
 import { runMockGrantDiscovery } from "@/lib/mock-discovery";
 import { scoreOpportunity } from "@/lib/scoring";
 
 export async function POST(req: NextRequest) {
   try {
+    clearLogs();
+    addLog("Starting discovery run");
+
     const body = await req.json();
     const { organizationProfileId } = body;
 
@@ -29,9 +33,14 @@ export async function POST(req: NextRequest) {
     }
 
     const org = orgResult.rows[0];
+    addLog("Loaded organization profile");
 
     // Run discovery (mock for now)
+    addLog("Running grant discovery");
     const discovered = await runMockGrantDiscovery(org);
+    addLog(`Discovered ${discovered.length} opportunities`);
+    addLog("Scoring matches");
+    addLog("Saving opportunities");
 
     let inserted = 0;
     let updated = 0;
@@ -132,6 +141,8 @@ export async function POST(req: NextRequest) {
         updated++;
       }
     }
+
+    addLog("Discovery complete");
 
     return NextResponse.json({
       success: true,
