@@ -43,6 +43,27 @@ type CreateOrganizationForm = {
   tax_status: string;
 };
 
+const CSV_COLUMNS = [
+  "organization_name",
+  "title",
+  "funder_name",
+  "deadline_at",
+  "amount_min",
+  "amount_max",
+  "currency",
+  "source_name",
+  "application_url",
+  "fit_score",
+  "fit_reasons",
+  "pipeline_stage",
+  "notes",
+] as const;
+
+function formatCsvValue(value: string | number | null | undefined) {
+  const normalized = value == null ? "" : String(value);
+  return `"${normalized.replace(/"/g, '""')}"`;
+}
+
 export default function DiscoverPage() {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [organizationProfileId, setOrganizationProfileId] = useState("");
@@ -351,14 +372,59 @@ export default function DiscoverPage() {
     }
   }
 
+  function handleExportCsv() {
+    if (opportunities.length === 0) {
+      return;
+    }
+
+    const rows = opportunities.map((opportunity) => ({
+      organization_name: selectedOrganization?.name ?? "",
+      title: opportunity.title ?? "",
+      funder_name: opportunity.funder_name ?? "",
+      deadline_at: opportunity.deadline_at ?? "",
+      amount_min: opportunity.amount_min ?? "",
+      amount_max: opportunity.amount_max ?? "",
+      currency: opportunity.currency ?? "",
+      source_name: opportunity.source_name ?? "",
+      application_url: opportunity.application_url ?? "",
+      fit_score: opportunity.fit_score ?? "",
+      fit_reasons: Array.isArray(opportunity.fit_reasons)
+        ? opportunity.fit_reasons.join("; ")
+        : "",
+      pipeline_stage: opportunity.pipeline_stage ?? "",
+      notes: opportunity.notes ?? "",
+    }));
+
+    const csvContent = [
+      CSV_COLUMNS.join(","),
+      ...rows.map((row) =>
+        CSV_COLUMNS.map((column) => formatCsvValue(row[column])).join(",")
+      ),
+    ].join("\n");
+
+    const blob = new Blob([csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10);
+
+    link.href = url;
+    link.download = `granthunter-opportunities-${date}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <main className="min-h-screen bg-white text-black p-8">
       <div className="max-w-6xl mx-auto space-y-8">
         <div className="space-y-3">
-          <h1 className="text-3xl font-bold">GrantFish Discover</h1>
+          <h1 className="text-3xl font-bold">GrantHunter Discover</h1>
           <p className="text-sm text-gray-600">
-            Run a grant scan for an organization profile and load matched
-            opportunities.
+            Scan grant sources, review ranked matches, and export opportunities
+            for your organization.
           </p>
         </div>
 
@@ -444,6 +510,14 @@ export default function DiscoverPage() {
                 className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
               >
                 Load Saved Opportunities
+              </button>
+
+              <button
+                onClick={handleExportCsv}
+                disabled={opportunities.length === 0}
+                className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
+              >
+                Export CSV
               </button>
             </div>
 
@@ -584,7 +658,8 @@ export default function DiscoverPage() {
 
           {opportunities.length === 0 ? (
             <div className="p-4 text-sm text-gray-600">
-              No opportunities loaded yet.
+              No opportunities loaded yet. Select an organization and run a
+              scan to review ranked matches.
             </div>
           ) : (
             <div className="overflow-x-auto">
