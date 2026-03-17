@@ -1,7 +1,17 @@
-let logs: string[] = [];
+export type LogEntry = {
+  step: string;
+  status: "pending" | "done";
+  duration?: number;
+};
 
-export function addLog(msg: string) {
-  logs.push(msg);
+let logs: LogEntry[] = [];
+
+export function addLog(
+  step: string,
+  status: "pending" | "done" = "done",
+  duration?: number
+) {
+  logs.push({ step, status, duration });
 }
 
 export function getLogs() {

@@ -36,6 +36,12 @@ export async function GET(req: NextRequest) {
       AND m.hidden = false
     ORDER BY
       m.starred DESC,
+      CASE
+        WHEN o.status = 'closed'
+          OR (o.deadline_at IS NOT NULL AND o.deadline_at < now())
+        THEN 1
+        ELSE 0
+      END ASC,
       m.fit_score DESC,
       o.deadline_at ASC NULLS LAST
     LIMIT 100

@@ -59,6 +59,9 @@ export async function POST(req: NextRequest) {
           summary,
           status,
           deadline_at,
+          location_scope,
+          country,
+          region,
           funder_name,
           amount_min,
           amount_max,
@@ -71,10 +74,19 @@ export async function POST(req: NextRequest) {
           dedupe_key
         )
         VALUES (
-          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
         )
         ON CONFLICT (dedupe_key)
         DO UPDATE SET
+          status = EXCLUDED.status,
+          deadline_at = EXCLUDED.deadline_at,
+          location_scope = EXCLUDED.location_scope,
+          country = EXCLUDED.country,
+          region = EXCLUDED.region,
+          eligibility_text = EXCLUDED.eligibility_text,
+          requirements_text = EXCLUDED.requirements_text,
+          extracted_fields = EXCLUDED.extracted_fields,
+          metadata = EXCLUDED.metadata,
           last_seen_at = now(),
           updated_at = now()
         RETURNING *
@@ -89,6 +101,9 @@ export async function POST(req: NextRequest) {
           opp.summary,
           opp.status || "open",
           opp.deadlineAt,
+          opp.locationScope,
+          opp.country || null,
+          opp.region || null,
           opp.funderName,
           opp.amountMin,
           opp.amountMax,
