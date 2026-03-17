@@ -2,6 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+const STAGE_OPTIONS = ["new", "review", "shortlist", "archived"] as const;
+
+type PipelineStage = (typeof STAGE_OPTIONS)[number];
+
 type OpportunityRow = {
   id: string;
   title: string;
@@ -43,8 +47,12 @@ export default function DiscoverPage() {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [organizationProfileId, setOrganizationProfileId] = useState("");
   const [loading, setLoading] = useState(false);
+  const [updatingStageId, setUpdatingStageId] = useState<string | null>(null);
   const [orgLoading, setOrgLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [lastScanCompletedAt, setLastScanCompletedAt] = useState<string | null>(
+    null
+  );
   const [opportunities, setOpportunities] = useState<OpportunityRow[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [createOrgForm, setCreateOrgForm] = useState<CreateOrganizationForm>({
@@ -201,6 +209,7 @@ export default function DiscoverPage() {
       setMessage(
         `Scan complete. Discovered ${data.discovered} opportunity(s).`
       );
+      setLastScanCompletedAt(new Date().toISOString());
 
       await loadOpportunities(organizationProfileId);
     } catch (err) {
@@ -285,6 +294,60 @@ export default function DiscoverPage() {
       setMessage(errorMessage);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleStageChange(
+    opportunityId: string,
+    pipelineStage: PipelineStage
+  ) {
+    const previousOpportunities = opportunities;
+
+    try {
+      if (!organizationProfileId) {
+        throw new Error("Please select an organization");
+      }
+
+      setUpdatingStageId(opportunityId);
+      setMessage("");
+      setOpportunities((current) =>
+        current.map((opp) =>
+          opp.id === opportunityId ? { ...opp, pipeline_stage: pipelineStage } : opp
+        )
+      );
+
+      const res = await fetch("/api/opportunity-matches/stage", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          organizationProfileId,
+          opportunityId,
+          pipelineStage,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to update stage");
+      }
+
+      setOpportunities((current) =>
+        current.map((opp) =>
+          opp.id === opportunityId
+            ? { ...opp, pipeline_stage: data.pipeline_stage }
+            : opp
+        )
+      );
+    } catch (err) {
+      setOpportunities(previousOpportunities);
+      const errorMessage =
+        err instanceof Error ? err.message : "Failed to update stage";
+      setMessage(errorMessage);
+    } finally {
+      setUpdatingStageId(null);
     }
   }
 
@@ -395,6 +458,13 @@ export default function DiscoverPage() {
             {message ? (
               <div className="text-sm rounded-lg bg-gray-100 px-3 py-2">
                 {message}
+              </div>
+            ) : null}
+
+            {lastScanCompletedAt ? (
+              <div className="text-sm text-gray-600">
+                Last scan completed at{" "}
+                {new Date(lastScanCompletedAt).toLocaleString()}.
               </div>
             ) : null}
           </div>
@@ -542,6 +612,11 @@ export default function DiscoverPage() {
                     const deadline = opp.deadline_at
                       ? new Date(opp.deadline_at).toLocaleDateString()
                       : "—";
+                    const stageValue = STAGE_OPTIONS.includes(
+                      opp.pipeline_stage as PipelineStage
+                    )
+                      ? opp.pipeline_stage
+                      : "";
 
                     return (
                       <tr key={opp.id} className="border-t align-top">
@@ -572,7 +647,33 @@ export default function DiscoverPage() {
                             </ul>
                           ) : null}
                         </td>
-                        <td className="px-4 py-3">{opp.pipeline_stage}</td>
+                        <td className="px-4 py-3">
+                          <select
+                            className="border rounded-md px-2 py-1 bg-white"
+                            value={stageValue}
+                            onChange={(e) =>
+                              handleStageChange(
+                                opp.id,
+                                e.target.value as PipelineStage
+                              )
+                            }
+                            disabled={
+                              !organizationProfileId ||
+                              updatingStageId === opp.id
+                            }
+                          >
+                            {stageValue === "" ? (
+                              <option value="" disabled>
+                                {opp.pipeline_stage}
+                              </option>
+                            ) : null}
+                            {STAGE_OPTIONS.map((stage) => (
+                              <option key={stage} value={stage}>
+                                {stage}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
                         <td className="px-4 py-3">{opp.source_name}</td>
                       </tr>
                     );
