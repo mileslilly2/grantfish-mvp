@@ -19,7 +19,7 @@ type OpportunityRow = {
   source_name: string;
   fit_score: number;
   fit_reasons: string[];
-  pipeline_stage: string;
+  pipeline_stage: PipelineStage | string;
   starred: boolean;
   notes: string | null;
 };
@@ -322,7 +322,9 @@ export default function DiscoverPage() {
     opportunityId: string,
     pipelineStage: PipelineStage
   ) {
-    const previousOpportunities = opportunities;
+    const previousStage =
+      opportunities.find((opp) => opp.id === opportunityId)?.pipeline_stage ??
+      "";
 
     try {
       if (!organizationProfileId) {
@@ -362,8 +364,15 @@ export default function DiscoverPage() {
             : opp
         )
       );
+      setMessage(`Updated opportunity stage to ${data.pipeline_stage}.`);
     } catch (err) {
-      setOpportunities(previousOpportunities);
+      setOpportunities((current) =>
+        current.map((opp) =>
+          opp.id === opportunityId
+            ? { ...opp, pipeline_stage: previousStage }
+            : opp
+        )
+      );
       const errorMessage =
         err instanceof Error ? err.message : "Failed to update stage";
       setMessage(errorMessage);

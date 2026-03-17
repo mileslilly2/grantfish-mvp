@@ -6,11 +6,21 @@ const ALLOWED_STAGES = new Set(["new", "review", "shortlist", "archived"]);
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
+    const payload =
+      body && typeof body === "object" && !Array.isArray(body) ? body : null;
+
+    if (!payload) {
+      return NextResponse.json(
+        { error: "Request body must be a JSON object" },
+        { status: 400 }
+      );
+    }
+
     const organizationProfileId = String(
-      body?.organizationProfileId ?? ""
+      payload.organizationProfileId ?? ""
     ).trim();
-    const opportunityId = String(body?.opportunityId ?? "").trim();
-    const pipelineStage = String(body?.pipelineStage ?? "").trim();
+    const opportunityId = String(payload.opportunityId ?? "").trim();
+    const pipelineStage = String(payload.pipelineStage ?? "").trim();
 
     if (!organizationProfileId || !opportunityId || !pipelineStage) {
       return NextResponse.json(
@@ -24,7 +34,10 @@ export async function PATCH(req: NextRequest) {
 
     if (!ALLOWED_STAGES.has(pipelineStage)) {
       return NextResponse.json(
-        { error: "Invalid pipeline stage" },
+        {
+          error:
+            "Invalid pipelineStage. Use one of: new, review, shortlist, archived",
+        },
         { status: 400 }
       );
     }
