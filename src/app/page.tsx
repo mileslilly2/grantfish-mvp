@@ -26,7 +26,7 @@ export default function Home() {
                 Try GrantHunter
               </Link>
               <a
-                href="mailto:your-email@example.com"
+                href="mailto:mileslilly2@gmail.com?subject=GrantHunter Demo Request"
                 className="rounded-lg border px-5 py-3 text-sm font-medium"
               >
                 Book a Demo
