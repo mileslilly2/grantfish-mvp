@@ -2,117 +2,111 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-const STAGE_OPTIONS = ["new", "review", "shortlist", "archived"] as const;
-
-type PipelineStage = (typeof STAGE_OPTIONS)[number];
-
-type OpportunityRow = {
-  id: string;
-  title: string;
-  funder_name: string | null;
-  deadline_at: string | null;
-  amount_min: string | null;
-  amount_max: string | null;
-  currency: string;
-  status: string;
-  application_url: string | null;
-  source_name: string;
-  fit_score: number;
-  fit_reasons: string[];
-  pipeline_stage: PipelineStage | string;
-  starred: boolean;
-  notes: string | null;
-};
-
-type Organization = {
-  id: string;
-  name: string;
-  entity_type: string;
-  mission: string;
-  geographies: string[];
-  focus_areas: string[];
-  tax_status: string | null;
-};
+import { fetchOrganizations } from "@/lib/api";
+import type { Opportunity } from "@/types/opportunity";
+import type { Organization } from "@/types/organization";
 
 type CreateOrganizationForm = {
   name: string;
-  entity_type: string;
+  entityType: string;
   mission: string;
   geographies: string;
-  focus_areas: string;
-  tax_status: string;
+  focusAreas: string;
+  taxStatus: string;
 };
 
-const CSV_COLUMNS = [
-  "organization_name",
-  "title",
-  "funder_name",
-  "deadline_at",
-  "amount_min",
-  "amount_max",
-  "currency",
-  "source_name",
-  "application_url",
-  "fit_score",
-  "fit_reasons",
-  "pipeline_stage",
-  "notes",
+type MatchResult = {
+  opportunity: Opportunity;
+  score: number;
+};
+
+type ApiError = {
+  error?: string;
+};
+
+const sampleOpportunities = [
+  {
+    title: "Appalachia Youth Arts Grant",
+    description: "Supports arts education programs for youth across Appalachia.",
+    agency: "Appalachia Arts Council",
+    geographies: "Appalachia",
+    focusAreas: "arts",
+    amount: 25000,
+    deadline: "2026-06-30T00:00:00.000Z",
+  },
+  {
+    title: "West Virginia Community Education Fund",
+    description: "Funds nonprofit education initiatives in West Virginia communities.",
+    agency: "WV Education Fund",
+    geographies: "West Virginia",
+    focusAreas: "education",
+    amount: 40000,
+    deadline: "2026-08-15T00:00:00.000Z",
+  },
+  {
+    title: "National Youth Development Opportunity",
+    description: "Provides support for youth development and mentoring programs.",
+    agency: "National Youth Partners",
+    geographies: "United States",
+    focusAreas: "youth",
+    amount: 30000,
+    deadline: "2026-09-01T00:00:00.000Z",
+  },
 ] as const;
 
-function formatCsvValue(value: string | number | null | undefined) {
-  const normalized = value == null ? "" : String(value);
-  return `"${normalized.replace(/"/g, '""')}"`;
+function isOrganization(
+  value: Organization | ApiError
+): value is Organization {
+  return "id" in value;
+}
+
+function formatCurrency(amount?: number) {
+  if (typeof amount !== "number") {
+    return "—";
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(amount);
 }
 
 export default function DiscoverPage() {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
-  const [organizationProfileId, setOrganizationProfileId] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [updatingStageId, setUpdatingStageId] = useState<string | null>(null);
+  const [organizationId, setOrganizationId] = useState("");
+  const [matches, setMatches] = useState<MatchResult[]>([]);
   const [orgLoading, setOrgLoading] = useState(true);
+  const [matchLoading, setMatchLoading] = useState(false);
+  const [seeding, setSeeding] = useState(false);
   const [message, setMessage] = useState("");
-  const [lastScanCompletedAt, setLastScanCompletedAt] = useState<string | null>(
-    null
-  );
-  const [opportunities, setOpportunities] = useState<OpportunityRow[]>([]);
-  const [hasLoadedOpportunities, setHasLoadedOpportunities] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
   const [createOrgForm, setCreateOrgForm] = useState<CreateOrganizationForm>({
     name: "",
-    entity_type: "nonprofit",
+    entityType: "nonprofit",
     mission: "",
     geographies: "",
-    focus_areas: "",
-    tax_status: "",
+    focusAreas: "",
+    taxStatus: "",
   });
 
   const selectedOrganization = useMemo(() => {
-    return (
-      organizations.find((org) => org.id === organizationProfileId) ?? null
-    );
-  }, [organizations, organizationProfileId]);
+    return organizations.find((org) => org.id === organizationId) ?? null;
+  }, [organizationId, organizations]);
 
   useEffect(() => {
     async function loadOrganizations() {
       try {
         setOrgLoading(true);
-
-        const res = await fetch("/api/organizations");
-
-        if (!res.ok) {
-          throw new Error("Failed to load organizations");
-        }
-
-        const data: Organization[] = await res.json();
+        const data = await fetchOrganizations();
         setOrganizations(data);
 
         if (data.length > 0) {
-          setOrganizationProfileId((current) => current || data[0].id);
+          setOrganizationId((current) => current || data[0].id);
         }
       } catch (err) {
-        const errorMessage =
-          err instanceof Error ? err.message : "Failed to load organizations";
-        setMessage(errorMessage);
+        setMessage(
+          err instanceof Error ? err.message : "Failed to load organizations"
+        );
       } finally {
         setOrgLoading(false);
       }
@@ -122,149 +116,50 @@ export default function DiscoverPage() {
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch("/api/logs", { cache: "no-store" });
-
-        if (!res.ok) {
-          return;
-        }
-
-        const data = await res.json();
-
-        if (Array.isArray(data)) {
-          const normalizedLogs = data.map((entry) => {
-            if (typeof entry === "string") {
-              return entry;
-            }
-
-            if (
-              entry &&
-              typeof entry === "object" &&
-              "message" in entry &&
-              typeof entry.message === "string"
-            ) {
-              return entry.message;
-            }
-
-            if (
-              entry &&
-              typeof entry === "object" &&
-              "step" in entry &&
-              typeof entry.step === "string"
-            ) {
-              return entry.step;
-            }
-
-            return JSON.stringify(entry);
-          });
-
-          setLogs(normalizedLogs);
-        }
-      } catch {
-        // ignore polling errors
-      }
-    }, 500);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  async function loadOrganizationsAndSelect(newOrgId?: string) {
-    const res = await fetch("/api/organizations");
-
-    if (!res.ok) {
-      throw new Error("Failed to load organizations");
-    }
-
-    const data: Organization[] = await res.json();
-    setOrganizations(data);
-
-    if (newOrgId) {
-      setOrganizationProfileId(newOrgId);
+    if (!organizationId) {
+      setMatches([]);
       return;
     }
 
-    if (!organizationProfileId && data.length > 0) {
-      setOrganizationProfileId(data[0].id);
-    }
-  }
+    async function loadMatches() {
+      try {
+        setMatchLoading(true);
+        const res = await fetch(
+          `/api/match?orgId=${encodeURIComponent(organizationId)}`
+        );
+        const data = (await res.json()) as MatchResult[] | ApiError;
 
-  async function loadOpportunities(orgId: string) {
-    const res = await fetch(
-      `/api/opportunities?organizationProfileId=${encodeURIComponent(orgId)}`
-    );
+        if (!res.ok) {
+          throw new Error(
+            !Array.isArray(data) && typeof data.error === "string"
+              ? data.error
+              : "Failed to load matches"
+          );
+        }
 
-    if (!res.ok) {
-      throw new Error("Failed to load opportunities");
-    }
-
-    const data = await res.json();
-    setOpportunities(data);
-    setHasLoadedOpportunities(true);
-  }
-
-  async function handleScan() {
-    try {
-      if (!organizationProfileId) {
-        throw new Error("Please select an organization");
+        setMatches(Array.isArray(data) ? data : []);
+      } catch (err) {
+        setMatches([]);
+        setMessage(err instanceof Error ? err.message : "Failed to load matches");
+      } finally {
+        setMatchLoading(false);
       }
-
-      setLoading(true);
-      setMessage("");
-      setLogs([]);
-
-      const res = await fetch("/api/discovery/run", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          organizationProfileId,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Scan failed");
-      }
-
-      setMessage(
-        `Scan complete. Discovered ${data.discovered} opportunity(s).`
-      );
-      setLastScanCompletedAt(
-        new Date().toLocaleTimeString([], {
-          hour: "numeric",
-          minute: "2-digit",
-        })
-      );
-
-      await loadOpportunities(organizationProfileId);
-    } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : "Something went wrong";
-      setMessage(errorMessage);
-    } finally {
-      setLoading(false);
     }
-  }
 
-  async function handleLoadExisting() {
-    try {
-      if (!organizationProfileId) {
-        throw new Error("Please select an organization");
-      }
+    loadMatches();
+  }, [organizationId]);
 
-      setLoading(true);
-      setMessage("");
-      await loadOpportunities(organizationProfileId);
-      setMessage("Loaded saved opportunities.");
-    } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : "Failed to load opportunities";
-      setMessage(errorMessage);
-    } finally {
-      setLoading(false);
+  async function reloadOrganizations(newOrgId?: string) {
+    const data = await fetchOrganizations();
+    setOrganizations(data);
+
+    if (newOrgId) {
+      setOrganizationId(newOrgId);
+      return;
+    }
+
+    if (!organizationId && data.length > 0) {
+      setOrganizationId(data[0].id);
     }
   }
 
@@ -272,189 +167,114 @@ export default function DiscoverPage() {
     e.preventDefault();
 
     try {
-      setLoading(true);
       setMessage("");
-
-      const payload = {
-        name: createOrgForm.name.trim(),
-        entity_type: createOrgForm.entity_type.trim() || "nonprofit",
-        mission: createOrgForm.mission.trim(),
-        geographies: createOrgForm.geographies
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-        focus_areas: createOrgForm.focus_areas
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-        tax_status: createOrgForm.tax_status.trim(),
-      };
 
       const res = await fetch("/api/organizations", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to create organization");
-      }
-
-      await loadOrganizationsAndSelect(data.id);
-
-      setCreateOrgForm({
-        name: "",
-        entity_type: "nonprofit",
-        mission: "",
-        geographies: "",
-        focus_areas: "",
-        tax_status: "",
-      });
-
-      setMessage(`Created organization: ${data.name}`);
-    } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : "Failed to create organization";
-      setMessage(errorMessage);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleStageChange(
-    opportunityId: string,
-    pipelineStage: PipelineStage
-  ) {
-    const previousStage =
-      opportunities.find((opp) => opp.id === opportunityId)?.pipeline_stage ??
-      "";
-
-    try {
-      if (!organizationProfileId) {
-        throw new Error("Please select an organization");
-      }
-
-      setUpdatingStageId(opportunityId);
-      setMessage("");
-      setOpportunities((current) =>
-        current.map((opp) =>
-          opp.id === opportunityId ? { ...opp, pipeline_stage: pipelineStage } : opp
-        )
-      );
-
-      const res = await fetch("/api/opportunity-matches/stage", {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify({
-          organizationProfileId,
-          opportunityId,
-          pipelineStage,
+          name: createOrgForm.name.trim(),
+          entityType: createOrgForm.entityType.trim() || "nonprofit",
+          mission: createOrgForm.mission.trim(),
+          geographies: createOrgForm.geographies.trim(),
+          focusAreas: createOrgForm.focusAreas.trim(),
+          taxStatus: createOrgForm.taxStatus.trim(),
         }),
       });
 
-      const data = await res.json();
+      const data = (await res.json()) as Organization | ApiError;
 
       if (!res.ok) {
-        throw new Error(data?.error || "Failed to update stage");
+        throw new Error(
+          !isOrganization(data) && typeof data.error === "string"
+            ? data.error
+            : "Failed to create organization"
+        );
       }
 
-      setOpportunities((current) =>
-        current.map((opp) =>
-          opp.id === opportunityId
-            ? { ...opp, pipeline_stage: data.pipeline_stage }
-            : opp
-        )
-      );
-      setMessage(`Updated opportunity stage to ${data.pipeline_stage}.`);
+      if (!isOrganization(data)) {
+        throw new Error("Failed to create organization");
+      }
+
+      await reloadOrganizations(data.id);
+      setCreateOrgForm({
+        name: "",
+        entityType: "nonprofit",
+        mission: "",
+        geographies: "",
+        focusAreas: "",
+        taxStatus: "",
+      });
+      setMessage(`Created organization: ${data.name}`);
     } catch (err) {
-      setOpportunities((current) =>
-        current.map((opp) =>
-          opp.id === opportunityId
-            ? { ...opp, pipeline_stage: previousStage }
-            : opp
-        )
+      setMessage(
+        err instanceof Error ? err.message : "Failed to create organization"
       );
-      const errorMessage =
-        err instanceof Error ? err.message : "Failed to update stage";
-      setMessage(errorMessage);
-    } finally {
-      setUpdatingStageId(null);
     }
   }
 
-  function handleExportCsv() {
-    if (opportunities.length === 0) {
-      return;
+  async function handleSeedOpportunities() {
+    try {
+      setSeeding(true);
+      setMessage("");
+
+      for (const opportunity of sampleOpportunities) {
+        const res = await fetch("/api/opportunities", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(opportunity),
+        });
+
+        if (!res.ok) {
+          const data = (await res.json()) as ApiError;
+          throw new Error(data.error || "Failed to seed opportunities");
+        }
+      }
+
+      setMessage("Added 3 sample opportunities.");
+
+      if (organizationId) {
+        const res = await fetch(
+          `/api/match?orgId=${encodeURIComponent(organizationId)}`
+        );
+        const data = (await res.json()) as MatchResult[] | ApiError;
+
+        if (res.ok && Array.isArray(data)) {
+          setMatches(data);
+        }
+      }
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to seed data");
+    } finally {
+      setSeeding(false);
     }
-
-    const rows = opportunities.map((opportunity) => ({
-      organization_name: selectedOrganization?.name ?? "",
-      title: opportunity.title ?? "",
-      funder_name: opportunity.funder_name ?? "",
-      deadline_at: opportunity.deadline_at ?? "",
-      amount_min: opportunity.amount_min ?? "",
-      amount_max: opportunity.amount_max ?? "",
-      currency: opportunity.currency ?? "",
-      source_name: opportunity.source_name ?? "",
-      application_url: opportunity.application_url ?? "",
-      fit_score: opportunity.fit_score ?? "",
-      fit_reasons: Array.isArray(opportunity.fit_reasons)
-        ? opportunity.fit_reasons.join("; ")
-        : "",
-      pipeline_stage: opportunity.pipeline_stage ?? "",
-      notes: opportunity.notes ?? "",
-    }));
-
-    const csvContent = [
-      CSV_COLUMNS.join(","),
-      ...rows.map((row) =>
-        CSV_COLUMNS.map((column) => formatCsvValue(row[column])).join(",")
-      ),
-    ].join("\n");
-
-    const blob = new Blob([csvContent], {
-      type: "text/csv;charset=utf-8;",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    const date = new Date().toISOString().slice(0, 10);
-
-    link.href = url;
-    link.download = `granthunter-opportunities-${date}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   }
 
   return (
-    <main className="min-h-screen bg-white text-black p-8">
-      <div className="max-w-6xl mx-auto space-y-8">
+    <main className="min-h-screen bg-white p-8 text-black">
+      <div className="mx-auto max-w-6xl space-y-8">
         <div className="space-y-3">
           <h1 className="text-3xl font-bold">GrantHunter Discover</h1>
           <p className="text-sm text-gray-600">
-            Scan grant sources, review ranked matches, and export opportunities
-            for your organization.
+            Select an organization, seed sample opportunities, and review ranked
+            grant matches.
           </p>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
-          <div className="border rounded-xl p-4 space-y-4">
+        <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+          <section className="space-y-4 rounded-xl border p-4">
             <label className="block space-y-2">
               <span className="text-sm font-medium">Select Organization</span>
               <select
-                className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
-                value={organizationProfileId}
+                className="w-full rounded-lg border bg-white px-3 py-2 text-sm"
+                value={organizationId}
                 onChange={(e) => {
-                  setOrganizationProfileId(e.target.value);
-                  setHasLoadedOpportunities(false);
-                  setOpportunities([]);
+                  setOrganizationId(e.target.value);
+                  setMessage("");
                 }}
                 disabled={orgLoading || organizations.length === 0}
               >
@@ -473,103 +293,63 @@ export default function DiscoverPage() {
             </label>
 
             {selectedOrganization ? (
-              <div className="border rounded-xl p-4 space-y-3">
+              <div className="space-y-3 rounded-xl border p-4">
                 <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                   Organization Summary
                 </div>
-
-                <div className="text-2xl font-bold">
-                  Searching for grants for: {selectedOrganization.name}
-                </div>
-
+                <div className="text-2xl font-bold">{selectedOrganization.name}</div>
                 <div>
                   <span className="font-medium">Entity Type:</span>{" "}
-                  <span className="text-gray-700">
-                    {selectedOrganization.entity_type || "—"}
-                  </span>
+                  {selectedOrganization.entityType || "—"}
                 </div>
-
                 <div>
                   <span className="font-medium">Mission:</span>{" "}
                   {selectedOrganization.mission || "—"}
                 </div>
-
                 <div>
                   <span className="font-medium">Focus Areas:</span>{" "}
-                  {selectedOrganization.focus_areas.length > 0
-                    ? selectedOrganization.focus_areas.join(", ")
+                  {(selectedOrganization.focusAreas?.length ?? 0) > 0
+                    ? selectedOrganization.focusAreas
                     : "—"}
                 </div>
-
                 <div>
                   <span className="font-medium">Geographies:</span>{" "}
-                  {selectedOrganization.geographies.length > 0
-                    ? selectedOrganization.geographies.join(", ")
+                  {(selectedOrganization.geographies?.length ?? 0) > 0
+                    ? selectedOrganization.geographies
                     : "—"}
                 </div>
-
                 <div>
                   <span className="font-medium">Tax Status:</span>{" "}
-                  {selectedOrganization.tax_status || "—"}
+                  {selectedOrganization.taxStatus || "—"}
                 </div>
               </div>
             ) : null}
 
             <div className="flex gap-3">
               <button
-                onClick={handleScan}
-                disabled={loading || !organizationProfileId}
-                className="rounded-lg bg-black text-white px-4 py-2 text-sm disabled:opacity-50"
+                type="button"
+                onClick={handleSeedOpportunities}
+                disabled={seeding}
+                className="rounded-lg bg-black px-4 py-2 text-sm text-white disabled:opacity-50"
               >
-                {loading ? "Scanning..." : "Scan for Grants"}
+                {seeding ? "Seeding..." : "Seed 3 Opportunities"}
               </button>
-
-              <button
-                onClick={handleLoadExisting}
-                disabled={loading || !organizationProfileId}
-                className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
-              >
-                Load Saved Opportunities
-              </button>
-
-              <button
-                onClick={handleExportCsv}
-                disabled={opportunities.length === 0}
-                className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
-              >
-                Export CSV
-              </button>
-            </div>
-
-            <div className="rounded-lg bg-black text-green-400 p-3 text-xs font-mono max-h-48 overflow-y-auto min-h-[72px]">
-              {logs.length > 0 ? (
-                logs.map((log, i) => <div key={i}>{">"} {log}</div>)
-              ) : (
-                <div>{">"}</div>
-              )}
             </div>
 
             {message ? (
-              <div className="text-sm rounded-lg bg-gray-100 px-3 py-2">
+              <div className="rounded-lg bg-gray-100 px-3 py-2 text-sm">
                 {message}
               </div>
             ) : null}
+          </section>
 
-            {lastScanCompletedAt ? (
-              <div className="text-sm text-gray-600">
-                Last scan completed at {lastScanCompletedAt}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="border rounded-xl p-4 space-y-4">
-            <div className="text-xl font-semibold">Create Organization</div>
-
+          <section className="rounded-xl border p-4">
+            <div className="mb-4 text-xl font-semibold">Create Organization</div>
             <form onSubmit={handleCreateOrganization} className="space-y-4">
               <label className="block space-y-2">
                 <span className="text-sm font-medium">Name</span>
                 <input
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
                   value={createOrgForm.name}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
@@ -577,7 +357,6 @@ export default function DiscoverPage() {
                       name: e.target.value,
                     }))
                   }
-                  placeholder="Example Nonprofit"
                   required
                 />
               </label>
@@ -585,22 +364,21 @@ export default function DiscoverPage() {
               <label className="block space-y-2">
                 <span className="text-sm font-medium">Entity Type</span>
                 <input
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
-                  value={createOrgForm.entity_type}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={createOrgForm.entityType}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
                       ...prev,
-                      entity_type: e.target.value,
+                      entityType: e.target.value,
                     }))
                   }
-                  placeholder="nonprofit"
                 />
               </label>
 
               <label className="block space-y-2">
                 <span className="text-sm font-medium">Mission</span>
                 <textarea
-                  className="w-full border rounded-lg px-3 py-2 text-sm min-h-[120px]"
+                  className="min-h-[120px] w-full rounded-lg border px-3 py-2 text-sm"
                   value={createOrgForm.mission}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
@@ -608,16 +386,13 @@ export default function DiscoverPage() {
                       mission: e.target.value,
                     }))
                   }
-                  placeholder="Supports arts and youth programs in Appalachia."
                 />
               </label>
 
               <label className="block space-y-2">
-                <span className="text-sm font-medium">
-                  Geographies (comma-separated)
-                </span>
+                <span className="text-sm font-medium">Geographies</span>
                 <input
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
                   value={createOrgForm.geographies}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
@@ -625,61 +400,62 @@ export default function DiscoverPage() {
                       geographies: e.target.value,
                     }))
                   }
-                  placeholder="West Virginia, Appalachia"
                 />
               </label>
 
               <label className="block space-y-2">
-                <span className="text-sm font-medium">
-                  Focus Areas (comma-separated)
-                </span>
+                <span className="text-sm font-medium">Focus Areas</span>
                 <input
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
-                  value={createOrgForm.focus_areas}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={createOrgForm.focusAreas}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
                       ...prev,
-                      focus_areas: e.target.value,
+                      focusAreas: e.target.value,
                     }))
                   }
-                  placeholder="arts, youth, education"
                 />
               </label>
 
               <label className="block space-y-2">
                 <span className="text-sm font-medium">Tax Status</span>
                 <input
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
-                  value={createOrgForm.tax_status}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={createOrgForm.taxStatus}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
                       ...prev,
-                      tax_status: e.target.value,
+                      taxStatus: e.target.value,
                     }))
                   }
-                  placeholder="501(c)(3)"
                 />
               </label>
 
               <button
                 type="submit"
-                disabled={loading}
-                className="rounded-lg bg-black text-white px-4 py-2 text-sm disabled:opacity-50"
+                className="rounded-lg border px-4 py-2 text-sm"
               >
-                {loading ? "Saving..." : "Create Organization"}
+                Create Organization
               </button>
             </form>
-          </div>
+          </section>
         </div>
 
-        <div className="border rounded-xl overflow-hidden">
-          <div className="px-4 py-3 border-b font-semibold">Opportunities</div>
+        <section className="overflow-hidden rounded-xl border">
+          <div className="border-b px-4 py-3 font-semibold">
+            Ranked Opportunities
+          </div>
 
-          {opportunities.length === 0 ? (
+          {!organizationId ? (
             <div className="p-4 text-sm text-gray-600">
-              {hasLoadedOpportunities
-                ? "No active ranked opportunities found yet. Try rescanning or adjusting the organization profile."
-                : "No opportunities loaded yet. Select an organization and run a scan to review ranked matches."}
+              Select an organization to view matches.
+            </div>
+          ) : matchLoading ? (
+            <div className="p-4 text-sm text-gray-600">Loading matches...</div>
+          ) : matches.length === 0 ? (
+            <div className="p-4 text-sm text-gray-600">
+              No opportunities available yet. Seed sample opportunities to see
+              ranked results.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -687,103 +463,42 @@ export default function DiscoverPage() {
                 <thead className="bg-gray-50 text-left">
                   <tr>
                     <th className="px-4 py-3">Title</th>
-                    <th className="px-4 py-3">Funder</th>
-                    <th className="px-4 py-3">Deadline</th>
+                    <th className="px-4 py-3">Agency</th>
+                    <th className="px-4 py-3">Focus</th>
+                    <th className="px-4 py-3">Geography</th>
                     <th className="px-4 py-3">Amount</th>
-                    <th className="px-4 py-3">Fit</th>
-                    <th className="px-4 py-3">Stage</th>
-                    <th className="px-4 py-3">Source</th>
+                    <th className="px-4 py-3">Deadline</th>
+                    <th className="px-4 py-3">Score</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {opportunities.map((opp) => {
-                    const amount =
-                      opp.amount_min && opp.amount_max
-                        ? `${opp.currency} ${opp.amount_min}–${opp.amount_max}`
-                        : opp.amount_min
-                          ? `${opp.currency} ${opp.amount_min}+`
-                          : "—";
-
-                    const deadline = opp.deadline_at
-                      ? new Date(opp.deadline_at).toLocaleDateString()
-                      : "—";
-                    const fitReasons = Array.isArray(opp.fit_reasons)
-                      ? opp.fit_reasons.filter(
-                          (reason) =>
-                            typeof reason === "string" &&
-                            reason.trim().length > 0
-                        )
-                      : [];
-                    const stageValue = STAGE_OPTIONS.includes(
-                      opp.pipeline_stage as PipelineStage
-                    )
-                      ? opp.pipeline_stage
-                      : "";
-
-                    return (
-                      <tr key={opp.id} className="border-t align-top">
-                        <td className="px-4 py-3">
-                          <div className="font-medium">{opp.title}</div>
-                          {opp.application_url ? (
-                            <a
-                              href={opp.application_url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-xs text-blue-600 underline"
-                            >
-                              Apply link
-                            </a>
-                          ) : null}
-                        </td>
-                        <td className="px-4 py-3">{opp.funder_name || "—"}</td>
-                        <td className="px-4 py-3">{deadline}</td>
-                        <td className="px-4 py-3">{amount}</td>
-                        <td className="px-4 py-3">
-                          <div className="font-medium">{opp.fit_score}</div>
-                          {fitReasons.length > 0 ? (
-                            <ul className="mt-1 ml-4 list-disc text-xs text-gray-600">
-                              {fitReasons.map((reason, idx) => (
-                                <li key={idx}>{reason}</li>
-                              ))}
-                            </ul>
-                          ) : null}
-                        </td>
-                        <td className="px-4 py-3">
-                          <select
-                            className="border rounded-md px-2 py-1 bg-white"
-                            value={stageValue}
-                            onChange={(e) =>
-                              handleStageChange(
-                                opp.id,
-                                e.target.value as PipelineStage
-                              )
-                            }
-                            disabled={
-                              !organizationProfileId ||
-                              updatingStageId === opp.id
-                            }
-                          >
-                            {stageValue === "" ? (
-                              <option value="" disabled>
-                                {opp.pipeline_stage}
-                              </option>
-                            ) : null}
-                            {STAGE_OPTIONS.map((stage) => (
-                              <option key={stage} value={stage}>
-                                {stage}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="px-4 py-3">{opp.source_name}</td>
-                      </tr>
-                    );
-                  })}
+                  {matches.map(({ opportunity, score }) => (
+                    <tr key={opportunity.id} className="align-top border-t">
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{opportunity.title}</div>
+                        <div className="mt-1 text-xs text-gray-600">
+                          {opportunity.description}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">{opportunity.agency}</td>
+                      <td className="px-4 py-3">{opportunity.focusAreas}</td>
+                      <td className="px-4 py-3">{opportunity.geographies}</td>
+                      <td className="px-4 py-3">
+                        {formatCurrency(opportunity.amount)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {opportunity.deadline
+                          ? new Date(opportunity.deadline).toLocaleDateString()
+                          : "—"}
+                      </td>
+                      <td className="px-4 py-3 font-semibold">{score}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
           )}
-        </div>
+        </section>
       </div>
     </main>
   );

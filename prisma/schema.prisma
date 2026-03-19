@@ -16,3 +16,15 @@ model Organization {
   taxStatus   String
   createdAt   DateTime @default(now())
 }
+
+model Opportunity {
+  id           String   @id @default(uuid())
+  title        String
+  description  String
+  agency       String
+  geographies  String
+  focusAreas   String
+  amount       Int?
+  deadline     DateTime?
+  createdAt    DateTime @default(now())
+}

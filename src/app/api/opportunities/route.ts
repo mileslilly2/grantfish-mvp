@@ -1,58 +1,68 @@
 export const runtime = "nodejs";
 
-import { NextRequest, NextResponse } from "next/server";
-import { pool } from "@/lib/postgres";
+import type { Opportunity as PrismaOpportunity } from "@prisma/client";
 
-export async function GET(req: NextRequest) {
-  const organizationProfileId = req.nextUrl.searchParams.get("organizationProfileId");
+import { prisma } from "@/lib/db";
+import type { Opportunity } from "@/types/opportunity";
 
-  if (!organizationProfileId) {
-    return NextResponse.json(
-      { error: "organizationProfileId is required" },
-      { status: 400 }
-    );
+function serializeOpportunity(record: PrismaOpportunity): Opportunity {
+  return {
+    id: record.id,
+    title: record.title,
+    description: record.description,
+    agency: record.agency,
+    geographies: record.geographies,
+    focusAreas: record.focusAreas,
+    amount: record.amount ?? undefined,
+    deadline: record.deadline?.toISOString(),
+    createdAt: record.createdAt.toISOString(),
+  };
+}
+
+export async function GET() {
+  try {
+    const records: PrismaOpportunity[] = await prisma.opportunity.findMany({
+      orderBy: { createdAt: "desc" },
+    });
+    const opportunities: Opportunity[] = records.map(serializeOpportunity);
+
+    return Response.json(opportunities);
+  } catch (err) {
+    console.error("GET OPPORTUNITIES ERROR:", err);
+    return Response.json({ error: String(err) }, { status: 500 });
   }
+}
 
-  const result = await pool.query(
-    `
-    SELECT
-      o.id,
-      o.title,
-      o.funder_name,
-      o.deadline_at,
-      o.amount_min,
-      o.amount_max,
-      o.currency,
-      o.status,
-      o.application_url,
-      o.source_name,
-      m.fit_score,
-      m.fit_reasons,
-      m.pipeline_stage,
-      m.starred,
-      m.notes
-    FROM opportunities o
-    JOIN opportunity_matches m
-      ON m.opportunity_id = o.id
-    WHERE m.organization_profile_id = $1
-      AND m.hidden = false
-      AND m.fit_score > 0
-      AND o.status <> 'closed'
-      AND (o.deadline_at IS NULL OR o.deadline_at >= now())
-    ORDER BY
-      m.starred DESC,
-      CASE
-        WHEN o.status = 'closed'
-          OR (o.deadline_at IS NOT NULL AND o.deadline_at < now())
-        THEN 1
-        ELSE 0
-      END ASC,
-      m.fit_score DESC,
-      o.deadline_at ASC NULLS LAST
-    LIMIT 100
-    `,
-    [organizationProfileId]
-  );
+export async function POST(req: Request) {
+  try {
+    const body = (await req.json()) as {
+      title?: string;
+      description?: string;
+      agency?: string;
+      geographies?: string;
+      focusAreas?: string;
+      amount?: number;
+      deadline?: string;
+    };
 
-  return NextResponse.json(result.rows);
+    const record: PrismaOpportunity = await prisma.opportunity.create({
+      data: {
+        title: String(body.title ?? "").trim(),
+        description: String(body.description ?? "").trim(),
+        agency: String(body.agency ?? "").trim(),
+        geographies: String(body.geographies ?? "").trim(),
+        focusAreas: String(body.focusAreas ?? "").trim(),
+        amount:
+          typeof body.amount === "number" && Number.isFinite(body.amount)
+            ? body.amount
+            : null,
+        deadline: body.deadline ? new Date(body.deadline) : null,
+      },
+    });
+
+    return Response.json(serializeOpportunity(record));
+  } catch (err) {
+    console.error("CREATE OPPORTUNITY ERROR:", err);
+    return Response.json({ error: String(err) }, { status: 500 });
+  }
 }

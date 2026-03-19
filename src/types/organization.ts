@@ -1,9 +1,10 @@
-export interface OrganizationSummary {
+export type Organization = {
   id: string;
   name: string;
-  entity_type: string;
+  entityType: string;
   mission: string;
-  geographies: string[];
-  focus_areas: string[];
-  tax_status: string | null;
-}
+  geographies: string;
+  focusAreas: string;
+  taxStatus: string;
+  createdAt: string;
+};
