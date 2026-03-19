@@ -34,6 +34,9 @@ export async function GET(req: NextRequest) {
       ON m.opportunity_id = o.id
     WHERE m.organization_profile_id = $1
       AND m.hidden = false
+      AND m.fit_score > 0
+      AND o.status <> 'closed'
+      AND (o.deadline_at IS NULL OR o.deadline_at >= now())
     ORDER BY
       m.starred DESC,
       CASE

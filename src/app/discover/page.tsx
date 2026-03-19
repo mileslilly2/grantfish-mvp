@@ -75,6 +75,7 @@ export default function DiscoverPage() {
     null
   );
   const [opportunities, setOpportunities] = useState<OpportunityRow[]>([]);
+  const [hasLoadedOpportunities, setHasLoadedOpportunities] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [createOrgForm, setCreateOrgForm] = useState<CreateOrganizationForm>({
     name: "",
@@ -199,6 +200,7 @@ export default function DiscoverPage() {
 
     const data = await res.json();
     setOpportunities(data);
+    setHasLoadedOpportunities(true);
   }
 
   async function handleScan() {
@@ -230,7 +232,12 @@ export default function DiscoverPage() {
       setMessage(
         `Scan complete. Discovered ${data.discovered} opportunity(s).`
       );
-      setLastScanCompletedAt(new Date().toISOString());
+      setLastScanCompletedAt(
+        new Date().toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      );
 
       await loadOpportunities(organizationProfileId);
     } catch (err) {
@@ -444,7 +451,11 @@ export default function DiscoverPage() {
               <select
                 className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
                 value={organizationProfileId}
-                onChange={(e) => setOrganizationProfileId(e.target.value)}
+                onChange={(e) => {
+                  setOrganizationProfileId(e.target.value);
+                  setHasLoadedOpportunities(false);
+                  setOpportunities([]);
+                }}
                 disabled={orgLoading || organizations.length === 0}
               >
                 {orgLoading ? (
@@ -546,8 +557,7 @@ export default function DiscoverPage() {
 
             {lastScanCompletedAt ? (
               <div className="text-sm text-gray-600">
-                Last scan completed at{" "}
-                {new Date(lastScanCompletedAt).toLocaleString()}.
+                Last scan completed at {lastScanCompletedAt}
               </div>
             ) : null}
           </div>
@@ -667,8 +677,9 @@ export default function DiscoverPage() {
 
           {opportunities.length === 0 ? (
             <div className="p-4 text-sm text-gray-600">
-              No opportunities loaded yet. Select an organization and run a
-              scan to review ranked matches.
+              {hasLoadedOpportunities
+                ? "No active ranked opportunities found yet. Try rescanning or adjusting the organization profile."
+                : "No opportunities loaded yet. Select an organization and run a scan to review ranked matches."}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -696,6 +707,13 @@ export default function DiscoverPage() {
                     const deadline = opp.deadline_at
                       ? new Date(opp.deadline_at).toLocaleDateString()
                       : "—";
+                    const fitReasons = Array.isArray(opp.fit_reasons)
+                      ? opp.fit_reasons.filter(
+                          (reason) =>
+                            typeof reason === "string" &&
+                            reason.trim().length > 0
+                        )
+                      : [];
                     const stageValue = STAGE_OPTIONS.includes(
                       opp.pipeline_stage as PipelineStage
                     )
@@ -722,10 +740,9 @@ export default function DiscoverPage() {
                         <td className="px-4 py-3">{amount}</td>
                         <td className="px-4 py-3">
                           <div className="font-medium">{opp.fit_score}</div>
-                          {Array.isArray(opp.fit_reasons) &&
-                          opp.fit_reasons.length > 0 ? (
-                            <ul className="mt-1 text-xs text-gray-600 list-disc ml-4">
-                              {opp.fit_reasons.map((reason, idx) => (
+                          {fitReasons.length > 0 ? (
+                            <ul className="mt-1 ml-4 list-disc text-xs text-gray-600">
+                              {fitReasons.map((reason, idx) => (
                                 <li key={idx}>{reason}</li>
                               ))}
                             </ul>
