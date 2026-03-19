@@ -1,5 +1,7 @@
+export const runtime = "nodejs";
+
 import { NextRequest, NextResponse } from "next/server";
-import { pool } from "@/lib/db";
+import { pool } from "@/lib/postgres";
 
 export async function GET(req: NextRequest) {
   const organizationProfileId = req.nextUrl.searchParams.get("organizationProfileId");

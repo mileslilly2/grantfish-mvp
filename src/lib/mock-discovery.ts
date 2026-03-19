@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { addLog } from "@/lib/logStore";
+import type { NormalizedOpportunity } from "@/types/normalized";
+import type { OpportunityStatus } from "@/types/db";
 
 type OrgLike = {
   mission?: string;
@@ -33,6 +35,17 @@ type TinyFishStreamEvent = TinyFishRunResponse & {
 };
 
 type RawOpportunity = Record<string, unknown>;
+
+function hasOpportunityArray(
+  value: unknown
+): value is { opportunities: RawOpportunity[] } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "opportunities" in value &&
+    Array.isArray(value.opportunities)
+  );
+}
 
 function getFocusAreas(org: OrgLike): string[] {
   return Array.isArray(org.focus_areas)
@@ -208,6 +221,19 @@ function stableText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+function normalizeOpportunityStatus(value: unknown): OpportunityStatus {
+  switch (stableText(value).toLowerCase()) {
+    case "open":
+    case "closed":
+    case "rolling":
+    case "draft":
+    case "unknown":
+      return stableText(value).toLowerCase() as OpportunityStatus;
+    default:
+      return "open";
+  }
+}
+
 function makeDedupeKey(sourceName: string, title: string, deadlineAt?: string | null, canonicalUrl?: string | null) {
   const raw = [sourceName, title, deadlineAt ?? "", canonicalUrl ?? ""].join("|").toLowerCase();
   return createHash("sha256").update(raw).digest("hex");
@@ -226,7 +252,10 @@ function toNumberOrNull(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function normalizeOpportunity(rawItem: RawOpportunity, source: LiveSource) {
+function normalizeOpportunity(
+  rawItem: RawOpportunity,
+  source: LiveSource
+): NormalizedOpportunity | null {
   const title = stableText(rawItem.title);
   if (!title) return null;
 
@@ -242,7 +271,7 @@ function normalizeOpportunity(rawItem: RawOpportunity, source: LiveSource) {
     canonicalUrl,
     title,
     summary: stableText(rawItem.summary) || null,
-    status: stableText(rawItem.status) || "open",
+    status: normalizeOpportunityStatus(rawItem.status),
     deadlineAt,
     funderName: stableText(rawItem.funderName) || source.name,
     amountMin: toNumberOrNull(rawItem.amountMin),
@@ -265,7 +294,16 @@ function normalizeOpportunity(rawItem: RawOpportunity, source: LiveSource) {
   };
 }
 
-async function runTinyFishSource(source: LiveSource, org: OrgLike) {
+function isNormalizedOpportunity(
+  item: NormalizedOpportunity | null
+): item is NormalizedOpportunity {
+  return item !== null;
+}
+
+async function runTinyFishSource(
+  source: LiveSource,
+  org: OrgLike
+): Promise<NormalizedOpportunity[]> {
   const apiKey = process.env.TINYFISH_API_KEY;
   const baseUrl = process.env.TINYFISH_BASE_URL || "https://agent.tinyfish.ai";
 
@@ -369,13 +407,13 @@ async function runTinyFishSource(source: LiveSource, org: OrgLike) {
 
   const items: RawOpportunity[] = Array.isArray(payload)
     ? payload as RawOpportunity[]
-    : Array.isArray(payload?.opportunities)
-    ? payload.opportunities as RawOpportunity[]
+    : hasOpportunityArray(payload)
+    ? payload.opportunities
     : [];
 
   return items
     .map((item) => normalizeOpportunity(item, source))
-    .filter(Boolean);
+    .filter(isNormalizedOpportunity);
 }
 
 function dedupeByKey<T extends { dedupeKey: string }>(items: T[]) {
@@ -386,7 +424,7 @@ function dedupeByKey<T extends { dedupeKey: string }>(items: T[]) {
   return Array.from(map.values());
 }
 
-function getMockFallback() {
+function getMockFallback(): NormalizedOpportunity[] {
   return [
     {
       type: "grant",
@@ -439,7 +477,9 @@ function getMockFallback() {
   ];
 }
 
-export async function runMockGrantDiscovery(org: OrgLike = {}) {
+export async function runMockGrantDiscovery(
+  org: OrgLike = {}
+): Promise<NormalizedOpportunity[]> {
   const useLive = process.env.GRANTFISH_USE_LIVE_TINYFISH === "true";
   const hasKey = Boolean(process.env.TINYFISH_API_KEY);
 

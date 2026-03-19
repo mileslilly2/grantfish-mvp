@@ -1,8 +1,11 @@
+export const runtime = "nodejs";
+
 import { NextRequest, NextResponse } from "next/server";
-import { pool } from "@/lib/db";
+import { pool } from "@/lib/postgres";
 import { addLog, clearLogs } from "@/lib/logStore";
 import { runMockGrantDiscovery } from "@/lib/mock-discovery";
 import { scoreOpportunity } from "@/lib/scoring";
+import type { NormalizedOpportunity } from "@/types/normalized";
 
 export async function POST(req: NextRequest) {
   try {
@@ -37,7 +40,8 @@ export async function POST(req: NextRequest) {
 
     // Run discovery (mock for now)
     addLog("Running grant discovery");
-    const discovered = await runMockGrantDiscovery(org);
+ 
+    const discovered: NormalizedOpportunity[] = await runMockGrantDiscovery(org);
     addLog(`Discovered ${discovered.length} opportunities`);
     addLog("Scoring matches");
     addLog("Saving opportunities");

@@ -1,5 +1,7 @@
+export const runtime = "nodejs";
+
 import { NextRequest, NextResponse } from "next/server";
-import { pool } from "@/lib/db";
+import { pool } from "@/lib/postgres";
 
 const ALLOWED_STAGES = new Set(["new", "review", "shortlist", "archived"]);
 
