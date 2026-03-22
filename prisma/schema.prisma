@@ -7,14 +7,13 @@ datasource db {
 }
 
 model Organization {
-  id          String   @id @default(uuid())
-  name        String
-  entityType  String
-  mission     String
-  geographies String
-  focusAreas  String
-  taxStatus   String
-  createdAt   DateTime @default(now())
+  id           String   @id @default(uuid())
+  name         String
+  entityType   String
+  mission      String
+  geographies  String[]
+  focusAreas   String[]
+  taxStatus    String
 }
 
 model Opportunity {
