@@ -50,8 +50,8 @@ export async function POST(req: Request) {
         title: String(body.title ?? "").trim(),
         description: String(body.description ?? "").trim(),
         agency: String(body.agency ?? "").trim(),
-        geographies: String(body.geographies ?? "").trim(),
-        focusAreas: String(body.focusAreas ?? "").trim(),
+        geographies: toStringArray(body.geographies),
+        focusAreas: toStringArray(body.focusAreas),
         amount:
           typeof body.amount === "number" && Number.isFinite(body.amount)
             ? body.amount
