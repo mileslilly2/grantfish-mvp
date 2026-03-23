@@ -2,17 +2,20 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm install
-
+# Copy everything FIRST (important)
 COPY . .
 
-# Required for Prisma during build
-ENV DATABASE_URL="postgresql://user:pass@localhost:5432/db"
-ENV NEXT_TELEMETRY_DISABLED=1
+# Install deps AFTER prisma is present
+RUN npm install
 
+# Generate prisma client
 RUN npx prisma generate
+
+# Build app
 RUN npm run build
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 
 EXPOSE 8080
 

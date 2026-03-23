@@ -5,6 +5,23 @@ import type { Organization } from "@/types/organization";
 
 export const runtime = "nodejs";
 
+function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item).trim())
+      .filter(Boolean);
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
 export async function GET() {
   try {
     const records: PrismaOrganization[] = await prisma.organization.findMany();
@@ -16,7 +33,6 @@ export async function GET() {
       geographies: org.geographies,
       focusAreas: org.focusAreas,
       taxStatus: org.taxStatus,
-      createdAt: org.createdAt.toISOString(),
     }));
     return Response.json(orgs);
   } catch (err) {
@@ -29,7 +45,14 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const record: PrismaOrganization = await prisma.organization.create({
-      data: body,
+      data: {
+        name: String(body.name ?? "").trim(),
+        entityType: String(body.entityType ?? "").trim(),
+        mission: String(body.mission ?? "").trim(),
+        geographies: toStringArray(body.geographies),
+        focusAreas: toStringArray(body.focusAreas),
+        taxStatus: String(body.taxStatus ?? "").trim(),
+      },
     });
     const org: Organization = {
       id: record.id,
@@ -39,7 +62,6 @@ export async function POST(req: Request) {
       geographies: record.geographies,
       focusAreas: record.focusAreas,
       taxStatus: record.taxStatus,
-      createdAt: record.createdAt.toISOString(),
     };
 
     return Response.json(org);

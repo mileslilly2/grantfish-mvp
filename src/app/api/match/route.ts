@@ -25,7 +25,6 @@ function serializeOrganization(record: PrismaOrganization): Organization {
     geographies: record.geographies,
     focusAreas: record.focusAreas,
     taxStatus: record.taxStatus,
-    createdAt: record.createdAt.toISOString(),
   };
 }
 
