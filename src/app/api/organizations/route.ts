@@ -44,15 +44,27 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    console.log("POST /api/organizations body:", body);
+
+    const geographies = toStringArray(body.geographies);
+    const focusAreas = toStringArray(body.focusAreas);
+
+    console.log("POST /api/organizations geographies:", geographies);
+    console.log("POST /api/organizations focusAreas:", focusAreas);
+
+    const data = {
+      name: String(body.name ?? "").trim(),
+      entityType: String(body.entityType ?? "").trim(),
+      mission: String(body.mission ?? "").trim(),
+      geographies,
+      focusAreas,
+      taxStatus: String(body.taxStatus ?? "").trim(),
+    };
+
+    console.log("POST /api/organizations prisma.organization.create data:", data);
+
     const record: PrismaOrganization = await prisma.organization.create({
-      data: {
-        name: String(body.name ?? "").trim(),
-        entityType: String(body.entityType ?? "").trim(),
-        mission: String(body.mission ?? "").trim(),
-        geographies: toStringArray(body.geographies),
-        focusAreas: toStringArray(body.focusAreas),
-        taxStatus: String(body.taxStatus ?? "").trim(),
-      },
+      data,
     });
     const org: Organization = {
       id: record.id,
