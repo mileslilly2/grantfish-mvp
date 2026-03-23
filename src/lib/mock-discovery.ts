@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
+import { ensureArray } from "@/lib/ensure-array";
 import { addLog } from "@/lib/logStore";
 import type { NormalizedOpportunity } from "@/types/normalized";
 import type { OpportunityStatus } from "@/types/db";
 
 type OrgLike = {
   mission?: string;
-  focus_areas?: string[];
-  geographies?: string[];
-  focusAreas?: string[];
+  focus_areas?: string[] | string;
+  geographies?: string[] | string;
+  focusAreas?: string[] | string;
 };
 
 type SourceType = "government_portal" | "foundation_site";
@@ -48,15 +49,11 @@ function hasOpportunityArray(
 }
 
 function getFocusAreas(org: OrgLike): string[] {
-  return Array.isArray(org.focus_areas)
-    ? org.focus_areas
-    : Array.isArray(org.focusAreas)
-    ? org.focusAreas
-    : [];
+  return ensureArray(org.focus_areas ?? org.focusAreas);
 }
 
 function getGeographies(org: OrgLike): string[] {
-  return Array.isArray(org.geographies) ? org.geographies : [];
+  return ensureArray(org.geographies);
 }
 
 function buildKeywords(org: OrgLike): string {

@@ -1,3 +1,5 @@
+import { ensureArray } from "@/lib/ensure-array";
+
 const STOPWORDS = new Set([
   "a",
   "an",
@@ -245,11 +247,7 @@ function unique<T>(values: T[]): T[] {
 }
 
 function toTextArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value
+  return ensureArray(value)
     .map((entry) => normalizeText(entry))
     .filter(Boolean);
 }
@@ -310,7 +308,7 @@ function countPhraseMatches(text: string, phrases: string[]): number {
 
 function isDirectServiceOrganization(org: ScorableOrganization): boolean {
   const orgText = normalizeText(
-    [org.entity_type, org.tax_status, org.mission, ...(org.focus_areas ?? [])].join(" ")
+    [org.entity_type, org.tax_status, org.mission, ...ensureArray(org.focus_areas)].join(" ")
   );
 
   return (
@@ -538,11 +536,15 @@ export function scoreOpportunity(opportunity: ScorableOpportunity, org: Scorable
   const locationText = getLocationText(opportunity);
   const titleSummaryText = normalizeText([opportunity.title, opportunity.summary].join(" "));
   const orgText = normalizeText(
-    [org.mission, org.entity_type, org.tax_status, ...(org.focus_areas ?? [])].join(" ")
+    [org.mission, org.entity_type, org.tax_status, ...ensureArray(org.focus_areas)].join(" ")
   );
   const sourceText = normalizeText([opportunity.source_name, opportunity.funder_name].join(" "));
 
-  const focusAreas = unique((org.focus_areas ?? []).map((value) => String(value).trim()).filter(Boolean));
+  const focusAreas = unique(
+    ensureArray(org.focus_areas)
+      .map((value) => String(value).trim())
+      .filter(Boolean)
+  );
   let positiveSignalCount = 0;
   for (const focusArea of focusAreas) {
     const matched = textIncludesAny(opportunityText, getSynonyms(focusArea));
@@ -573,7 +575,11 @@ export function scoreOpportunity(opportunity: ScorableOpportunity, org: Scorable
     reasons.push(`Mission overlap: ${keyword}`);
   }
 
-  const geographies = unique((org.geographies ?? []).map((value) => String(value).trim()).filter(Boolean));
+  const geographies = unique(
+    ensureArray(org.geographies)
+      .map((value) => String(value).trim())
+      .filter(Boolean)
+  );
   for (const geography of geographies) {
     const normalizedGeography = normalizeText(geography);
     if (!normalizedGeography || !textIncludesAny(locationText, getGeographyTerms(geography))) {

@@ -7,23 +7,23 @@ datasource db {
 }
 
 model Organization {
-  id           String   @id @default(uuid())
-  name         String
-  entityType   String
-  mission      String
-  geographies  String[]
-  focusAreas   String[]
-  taxStatus    String
+  id          String   @id @default(uuid())
+  name        String
+  entityType  String
+  mission     String
+  geographies String[]
+  focusAreas  String[]
+  taxStatus   String
 }
 
 model Opportunity {
-  id           String   @id @default(uuid())
-  title        String
-  description  String
-  agency       String
-  geographies  String
-  focusAreas   String
-  amount       Int?
-  deadline     DateTime?
-  createdAt    DateTime @default(now())
+  id          String    @id @default(uuid())
+  title       String
+  description String
+  agency      String
+  geographies String[]
+  focusAreas  String[]
+  amount      Int?
+  deadline    DateTime?
+  createdAt   DateTime  @default(now())
 }

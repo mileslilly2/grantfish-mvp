@@ -1,13 +1,26 @@
 import type { Opportunity } from "@/types/opportunity";
 import type { Organization } from "@/types/organization";
+import { ensureArray } from "@/lib/ensure-array";
+
+function toNormalizedStringArray(value: string | string[] | null | undefined): string[] {
+  return ensureArray(value)
+    .map((entry) => String(entry).trim().toLowerCase())
+    .filter(Boolean);
+}
 
 export function scoreMatch(org: Organization, opp: Opportunity): number {
   let score = 0;
+  const organizationFocusAreas = toNormalizedStringArray(org.focusAreas);
+  const opportunityFocusAreas = toNormalizedStringArray(opp.focusAreas);
+  const organizationGeographies = toNormalizedStringArray(org.geographies);
+  const opportunityGeographies = toNormalizedStringArray(opp.geographies);
 
-  if (org.focusAreas.length > 0 && opp.focusAreas) {
-    const opportunityFocus = opp.focusAreas.toLowerCase();
-    const hasFocusMatch = org.focusAreas.some((focusArea) =>
-      opportunityFocus.includes(focusArea.toLowerCase())
+  if (organizationFocusAreas.length > 0 && opportunityFocusAreas.length > 0) {
+    const hasFocusMatch = organizationFocusAreas.some((focusArea) =>
+      opportunityFocusAreas.some(
+        (opportunityFocusArea) =>
+          opportunityFocusArea.includes(focusArea) || focusArea.includes(opportunityFocusArea)
+      )
     );
 
     if (hasFocusMatch) {
@@ -15,10 +28,12 @@ export function scoreMatch(org: Organization, opp: Opportunity): number {
     }
   }
 
-  if (org.geographies.length > 0 && opp.geographies) {
-    const opportunityGeography = opp.geographies.toLowerCase();
-    const hasGeographyMatch = org.geographies.some((geography) =>
-      opportunityGeography.includes(geography.toLowerCase())
+  if (organizationGeographies.length > 0 && opportunityGeographies.length > 0) {
+    const hasGeographyMatch = organizationGeographies.some((geography) =>
+      opportunityGeographies.some(
+        (opportunityGeography) =>
+          opportunityGeography.includes(geography) || geography.includes(opportunityGeography)
+      )
     );
 
     if (hasGeographyMatch) {

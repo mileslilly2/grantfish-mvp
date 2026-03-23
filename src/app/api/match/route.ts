@@ -5,6 +5,7 @@ import type {
 import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
+import { ensureArray } from "@/lib/ensure-array";
 import { scoreMatch } from "@/lib/match";
 import type { Opportunity } from "@/types/opportunity";
 import type { Organization } from "@/types/organization";
@@ -34,8 +35,8 @@ function serializeOpportunity(record: PrismaOpportunity): Opportunity {
     title: record.title,
     description: record.description,
     agency: record.agency,
-    geographies: record.geographies,
-    focusAreas: record.focusAreas,
+    geographies: ensureArray(record.geographies),
+    focusAreas: ensureArray(record.focusAreas),
     amount: record.amount ?? undefined,
     deadline: record.deadline?.toISOString(),
     createdAt: record.createdAt.toISOString(),
