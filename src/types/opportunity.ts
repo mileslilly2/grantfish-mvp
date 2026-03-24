@@ -3,8 +3,8 @@ export type Opportunity = {
   title: string;
   description: string;
   agency: string;
-  geographies: string | string[];
-  focusAreas: string | string[];
+  geographies: string[];
+  focusAreas: string[];
   amount?: number;
   deadline?: string;
   createdAt: string;

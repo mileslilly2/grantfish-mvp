@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ensureArray } from "@/lib/ensure-array";
+import { ensureArray, safeArray } from "@/lib/ensure-array";
 import { addLog } from "@/lib/logStore";
 import type { NormalizedOpportunity } from "@/types/normalized";
 import type { OpportunityStatus } from "@/types/db";
@@ -57,10 +57,10 @@ function getGeographies(org: OrgLike): string[] {
 }
 
 function buildKeywords(org: OrgLike): string {
-  const parts = [
+  const parts = safeArray([
     ...(getFocusAreas(org) || []),
     ...(getGeographies(org) || []),
-  ]
+  ])
     .map((x) => String(x).trim())
     .filter(Boolean);
 
@@ -337,8 +337,7 @@ async function runTinyFishSource(
   let result: unknown = null;
 
   const handleEvent = (rawEvent: string) => {
-    const dataLines = rawEvent
-      .split(/\r?\n/)
+    const dataLines = safeArray<string>(rawEvent.split(/\r?\n/))
       .filter((line) => line.startsWith("data:"))
       .map((line) => line.slice(5).trim())
       .filter(Boolean);
@@ -408,7 +407,7 @@ async function runTinyFishSource(
     ? payload.opportunities
     : [];
 
-  return items
+  return safeArray<RawOpportunity>(items)
     .map((item) => normalizeOpportunity(item, source))
     .filter(isNormalizedOpportunity);
 }
@@ -485,7 +484,7 @@ export async function runMockGrantDiscovery(
   }
 
   const settled = await Promise.allSettled(
-    LIVE_SOURCES.map((source) => runTinyFishSource(source, org))
+    safeArray<LiveSource>(LIVE_SOURCES).map((source) => runTinyFishSource(source, org))
   );
 
   const liveResults = settled.flatMap((result) =>
@@ -496,7 +495,7 @@ export async function runMockGrantDiscovery(
     return dedupeByKey(liveResults);
   }
 
-  const errors = settled
+  const errors = safeArray<PromiseSettledResult<NormalizedOpportunity[]>>(settled)
     .filter((r): r is PromiseRejectedResult => r.status === "rejected")
     .map((r) => r.reason instanceof Error ? r.reason.message : String(r.reason));
 

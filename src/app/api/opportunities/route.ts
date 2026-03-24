@@ -3,16 +3,28 @@ export const runtime = "nodejs";
 import type { Opportunity as PrismaOpportunity } from "@prisma/client";
 
 import { getPrisma } from "@/lib/db";
-import type { Opportunity } from "@/types/opportunity";
+import { ensureArray, safeArray } from "@/lib/ensure-array";
 
-function serializeOpportunity(record: PrismaOpportunity): Opportunity {
+type OpportunityResponse = {
+  id: string;
+  title: string;
+  description: string;
+  agency: string;
+  geographies: string[];
+  focusAreas: string[];
+  amount?: number;
+  deadline?: string;
+  createdAt: string;
+};
+
+function serializeOpportunity(record: PrismaOpportunity): OpportunityResponse {
   return {
     id: record.id,
     title: record.title,
     description: record.description,
     agency: record.agency,
-    geographies: record.geographies,
-    focusAreas: record.focusAreas,
+    geographies: ensureArray(record.geographies),
+    focusAreas: ensureArray(record.focusAreas),
     amount: record.amount ?? undefined,
     deadline: record.deadline?.toISOString(),
     createdAt: record.createdAt.toISOString(),
@@ -21,11 +33,13 @@ function serializeOpportunity(record: PrismaOpportunity): Opportunity {
 
 export async function GET() {
   try {
-    const prisma = await getPrisma();
+    const prisma = getPrisma();
     const records: PrismaOpportunity[] = await prisma.opportunity.findMany({
       orderBy: { createdAt: "desc" },
     });
-    const opportunities: Opportunity[] = records.map(serializeOpportunity);
+    const opportunities: OpportunityResponse[] = safeArray<PrismaOpportunity>(records).map(
+      serializeOpportunity
+    );
 
     return Response.json(opportunities);
   } catch (err) {
@@ -34,21 +48,9 @@ export async function GET() {
   }
 }
 
-function toStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item).trim()).filter(Boolean);
-  }
-
-  if (typeof value === "string") {
-    return value.split(",").map((item) => item.trim()).filter(Boolean);
-  }
-
-  return [];
-}
-
 export async function POST(req: Request) {
   try {
-    const prisma = await getPrisma();
+    const prisma = getPrisma();
     const body = (await req.json()) as {
       title?: string;
       description?: string;
@@ -64,8 +66,8 @@ export async function POST(req: Request) {
         title: String(body.title ?? "").trim(),
         description: String(body.description ?? "").trim(),
         agency: String(body.agency ?? "").trim(),
-        geographies: toStringArray(body.geographies),
-        focusAreas: toStringArray(body.focusAreas),
+        geographies: ensureArray(body.geographies),
+        focusAreas: ensureArray(body.focusAreas),
         amount:
           typeof body.amount === "number" && Number.isFinite(body.amount)
             ? body.amount

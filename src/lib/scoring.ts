@@ -1,4 +1,4 @@
-import { ensureArray } from "@/lib/ensure-array";
+import { ensureArray, safeArray } from "@/lib/ensure-array";
 
 const STOPWORDS = new Set([
   "a",
@@ -247,19 +247,25 @@ function unique<T>(values: T[]): T[] {
 }
 
 function toTextArray(value: unknown): string[] {
-  return ensureArray(value)
+  return safeArray(ensureArray(value))
     .map((entry) => normalizeText(entry))
     .filter(Boolean);
 }
 
 function getSynonyms(term: string): string[] {
   const normalized = normalizeText(term);
-  const direct = TERM_SYNONYMS[normalized] ?? [];
-  const reverse = Object.entries(TERM_SYNONYMS)
-    .filter(([, synonyms]) => synonyms.includes(normalized))
+  const direct = safeArray<string>(TERM_SYNONYMS[normalized] ?? []);
+  const reverse = safeArray<[string, string[]]>(Object.entries(TERM_SYNONYMS))
+    .filter(([, synonyms]) =>
+      Array.isArray(synonyms) && synonyms.includes(normalized)
+    )
     .map(([key]) => key);
 
-  return unique([normalized, ...direct.map(normalizeText), ...reverse.map(normalizeText)]);
+  return unique([
+    normalized,
+    ...((Array.isArray(direct) ? direct : []).map(normalizeText)),
+    ...((Array.isArray(reverse) ? reverse : []).map(normalizeText)),
+  ]);
 }
 
 function textIncludesAny(text: string, phrases: string[]): string | null {
@@ -338,10 +344,12 @@ function isEnvironmentalOrganization(orgText: string): boolean {
 }
 
 function getDomainSignals(text: string) {
-  const scores = Object.entries(DOMAIN_KEYWORDS).map(([domain, keywords]) => ({
-    domain: domain as DomainName,
-    score: countPhraseMatches(text, keywords),
-  }));
+  const scores = safeArray<[string, string[]]>(Object.entries(DOMAIN_KEYWORDS)).map(
+    ([domain, keywords]) => ({
+      domain: domain as DomainName,
+      score: countPhraseMatches(text, Array.isArray(keywords) ? keywords : []),
+    })
+  );
 
   const strongDomains = scores.filter((entry) => entry.score >= 2);
   const topDomain = scores.reduce<{ domain: DomainName | null; score: number }>(
@@ -460,9 +468,9 @@ function getMismatchPenalty(params: {
 
 function getGeographyTerms(geography: string): string[] {
   const normalized = normalizeText(geography);
-  const direct = GEOGRAPHY_ALIASES[normalized] ?? [];
+  const direct = safeArray<string>(GEOGRAPHY_ALIASES[normalized] ?? []);
 
-  return unique([normalized, ...direct.map(normalizeText)]);
+  return unique([normalized, ...((Array.isArray(direct) ? direct : []).map(normalizeText))]);
 }
 
 function isNonprofitLike(org: ScorableOrganization): boolean {
@@ -541,7 +549,7 @@ export function scoreOpportunity(opportunity: ScorableOpportunity, org: Scorable
   const sourceText = normalizeText([opportunity.source_name, opportunity.funder_name].join(" "));
 
   const focusAreas = unique(
-    ensureArray(org.focus_areas)
+    safeArray<unknown>(ensureArray(org.focus_areas))
       .map((value) => String(value).trim())
       .filter(Boolean)
   );
@@ -576,7 +584,7 @@ export function scoreOpportunity(opportunity: ScorableOpportunity, org: Scorable
   }
 
   const geographies = unique(
-    ensureArray(org.geographies)
+    safeArray<unknown>(ensureArray(org.geographies))
       .map((value) => String(value).trim())
       .filter(Boolean)
   );
@@ -639,8 +647,12 @@ export function scoreOpportunity(opportunity: ScorableOpportunity, org: Scorable
     opportunityText,
     titleSummaryText,
     sourceText,
-    orgStrongDomains: orgDomains.strongDomains.map((entry) => entry.domain),
-    opportunityStrongDomains: opportunityDomains.strongDomains.map(
+    orgStrongDomains: safeArray<{ domain: DomainName; score: number }>(
+      orgDomains.strongDomains
+    ).map((entry) => entry.domain),
+    opportunityStrongDomains: safeArray<{ domain: DomainName; score: number }>(
+      opportunityDomains.strongDomains
+    ).map(
       (entry) => entry.domain
     ),
     opportunityTopDomain: opportunityDomains.topDomain,
