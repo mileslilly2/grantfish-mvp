@@ -4,9 +4,7 @@ import type {
 } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
-import { prisma } from "@/lib/db";
-import { ensureArray } from "@/lib/ensure-array";
-import { scoreMatch } from "@/lib/match";
+import { getPrisma } from "@/lib/db";
 import type { Opportunity } from "@/types/opportunity";
 import type { Organization } from "@/types/organization";
 
@@ -17,34 +15,23 @@ type MatchResult = {
   score: number;
 };
 
-function serializeOrganization(record: PrismaOrganization): Organization {
-  return {
-    id: record.id,
-    name: record.name,
-    entityType: record.entityType,
-    mission: record.mission,
-    geographies: record.geographies,
-    focusAreas: record.focusAreas,
-    taxStatus: record.taxStatus,
-  };
-}
+type NormalizedOrganization = Omit<Organization, "focusAreas" | "geographies"> & {
+  focusAreas: string[];
+  geographies: string[];
+};
 
-function serializeOpportunity(record: PrismaOpportunity): Opportunity {
-  return {
-    id: record.id,
-    title: record.title,
-    description: record.description,
-    agency: record.agency,
-    geographies: ensureArray(record.geographies),
-    focusAreas: ensureArray(record.focusAreas),
-    amount: record.amount ?? undefined,
-    deadline: record.deadline?.toISOString(),
-    createdAt: record.createdAt.toISOString(),
-  };
-}
+type NormalizedOpportunity = Omit<Opportunity, "focusAreas" | "geographies"> & {
+  focusAreas: string[];
+  geographies: string[];
+};
 
 export async function GET(req: NextRequest) {
   try {
+    const [{ ensureArray }, { scoreMatch }] = await Promise.all([
+      import("@/lib/ensure-array"),
+      import("@/lib/match"),
+    ]);
+    const prisma = await getPrisma();
     const orgId = req.nextUrl.searchParams.get("orgId");
 
     if (!orgId) {
@@ -61,6 +48,28 @@ export async function GET(req: NextRequest) {
 
     const opportunityRecords = await prisma.opportunity.findMany({
       orderBy: { createdAt: "desc" },
+    });
+
+    const serializeOrganization = (record: PrismaOrganization): NormalizedOrganization => ({
+      id: record.id,
+      name: record.name,
+      entityType: record.entityType,
+      mission: record.mission,
+      geographies: ensureArray(record.geographies),
+      focusAreas: ensureArray(record.focusAreas),
+      taxStatus: record.taxStatus,
+    });
+
+    const serializeOpportunity = (record: PrismaOpportunity): NormalizedOpportunity => ({
+      id: record.id,
+      title: record.title,
+      description: record.description,
+      agency: record.agency,
+      geographies: ensureArray(record.geographies),
+      focusAreas: ensureArray(record.focusAreas),
+      amount: record.amount ?? undefined,
+      deadline: record.deadline?.toISOString(),
+      createdAt: record.createdAt.toISOString(),
     });
 
     const org = serializeOrganization(orgRecord);

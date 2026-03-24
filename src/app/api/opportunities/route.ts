@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import type { Opportunity as PrismaOpportunity } from "@prisma/client";
 
-import { prisma } from "@/lib/db";
+import { getPrisma } from "@/lib/db";
 import type { Opportunity } from "@/types/opportunity";
 
 function serializeOpportunity(record: PrismaOpportunity): Opportunity {
@@ -21,6 +21,7 @@ function serializeOpportunity(record: PrismaOpportunity): Opportunity {
 
 export async function GET() {
   try {
+    const prisma = await getPrisma();
     const records: PrismaOpportunity[] = await prisma.opportunity.findMany({
       orderBy: { createdAt: "desc" },
     });
@@ -47,12 +48,13 @@ function toStringArray(value: unknown): string[] {
 
 export async function POST(req: Request) {
   try {
+    const prisma = await getPrisma();
     const body = (await req.json()) as {
       title?: string;
       description?: string;
       agency?: string;
-      geographies?: string;
-      focusAreas?: string;
+      geographies?: string | string[];
+      focusAreas?: string | string[];
       amount?: number;
       deadline?: string;
     };

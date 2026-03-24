@@ -1,6 +1,12 @@
 export function ensureArray(value: unknown): string[] {
+  if (value == null) {
+    return [];
+  }
+
   if (Array.isArray(value)) {
-    return value;
+    return value
+      .map((entry) => String(entry).trim())
+      .filter(Boolean);
   }
 
   if (typeof value === "string") {
@@ -10,5 +16,5 @@ export function ensureArray(value: unknown): string[] {
       .filter(Boolean);
   }
 
-  return [];
+  return [String(value).trim()].filter(Boolean);
 }

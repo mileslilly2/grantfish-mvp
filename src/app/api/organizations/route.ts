@@ -1,29 +1,14 @@
 import type { Organization as PrismaOrganization } from "@prisma/client";
 
-import { prisma } from "@/lib/db";
+import { getPrisma } from "@/lib/db";
+import { ensureArray } from "@/lib/ensure-array";
 import type { Organization } from "@/types/organization";
 
 export const runtime = "nodejs";
 
-function toStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => String(item).trim())
-      .filter(Boolean);
-  }
-
-  if (typeof value === "string") {
-    return value
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
-  }
-
-  return [];
-}
-
 export async function GET() {
   try {
+    const prisma = await getPrisma();
     const records: PrismaOrganization[] = await prisma.organization.findMany();
     const orgs: Organization[] = records.map((org) => ({
       id: org.id,
@@ -43,14 +28,15 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const prisma = await getPrisma();
     const body = await req.json();
+
     console.log("POST /api/organizations body:", body);
+    console.log("POST /api/organizations body.geographies:", body?.geographies);
+    console.log("POST /api/organizations body.focusAreas:", body?.focusAreas);
 
-    const geographies = toStringArray(body.geographies);
-    const focusAreas = toStringArray(body.focusAreas);
-
-    console.log("POST /api/organizations geographies:", geographies);
-    console.log("POST /api/organizations focusAreas:", focusAreas);
+    const geographies = ensureArray(body?.geographies);
+    const focusAreas = ensureArray(body?.focusAreas);
 
     const data = {
       name: String(body.name ?? "").trim(),
@@ -63,9 +49,8 @@ export async function POST(req: Request) {
 
     console.log("POST /api/organizations prisma.organization.create data:", data);
 
-    const record: PrismaOrganization = await prisma.organization.create({
-      data,
-    });
+    const record: PrismaOrganization = await prisma.organization.create({ data });
+
     const org: Organization = {
       id: record.id,
       name: record.name,
