@@ -1,7 +1,4 @@
-import type { Organization as PrismaOrganization } from "@prisma/client";
-
-import { getPrisma } from "@/lib/db";
-import { ensureArray } from "@/lib/ensure-array";
+import { Pool } from "pg";
 
 export const runtime = "nodejs";
 
@@ -15,84 +12,129 @@ type OrganizationResponse = {
   taxStatus: string;
 };
 
-function serializeOrganization(record: PrismaOrganization): OrganizationResponse {
+const globalForPg = globalThis as unknown as {
+  pool?: Pool;
+};
+
+function getPool(): Pool {
+  if (!globalForPg.pool) {
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error("DATABASE_URL is not set");
+    }
+
+    globalForPg.pool = new Pool({ connectionString });
+  }
+
+  return globalForPg.pool;
+}
+
+function ensureArray(value: unknown): string[] {
+  if (!value) return [];
+
+  if (Array.isArray(value)) {
+    return value.map((v) => String(v).trim()).filter(Boolean);
+  }
+
+  if (typeof value === "string") {
+    if (value.startsWith("{") && value.endsWith("}")) {
+      return value
+        .slice(1, -1)
+        .split(",")
+        .map((v) => v.replace(/^"(.*)"$/, "$1").replace(/\\"/g, '"').trim())
+        .filter(Boolean);
+    }
+
+    return value
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+
+  return [String(value).trim()].filter(Boolean);
+}
+
+function serializeRow(row: Record<string, unknown>): OrganizationResponse {
   return {
-    id: record.id,
-    name: record.name,
-    entityType: record.entityType,
-    mission: record.mission,
-    geographies: ensureArray(record.geographies),
-    focusAreas: ensureArray(record.focusAreas),
-    taxStatus: record.taxStatus,
+    id: String(row.id ?? ""),
+    name: String(row.name ?? ""),
+    entityType: String(row.entityType ?? ""),
+    mission: String(row.mission ?? ""),
+    geographies: ensureArray(row.geographies),
+    focusAreas: ensureArray(row.focusAreas),
+    taxStatus: String(row.taxStatus ?? ""),
   };
 }
 
 export async function GET() {
   try {
-    const prisma = getPrisma();
+    const pool = getPool();
 
-    const raw = await prisma.organization.findMany();
+    const result = await pool.query(`
+      SELECT
+        id,
+        name,
+        "entityType",
+        mission,
+        geographies,
+        "focusAreas",
+        "taxStatus"
+      FROM "Organization"
+      ORDER BY name ASC
+    `);
 
-    console.log("RAW FROM PRISMA:", raw);
-
-    const records = Array.isArray(raw) ? raw : [];
-
-    const orgs = records.map((record) => {
-      return {
-        id: record.id,
-        name: record.name,
-        entityType: record.entityType,
-        mission: record.mission,
-
-        // 🔥 FORCE normalization HERE (not in serialize fn)
-        geographies: Array.isArray(record.geographies)
-          ? record.geographies
-          : record.geographies
-          ? [record.geographies]
-          : [],
-
-        focusAreas: Array.isArray(record.focusAreas)
-          ? record.focusAreas
-          : record.focusAreas
-          ? [record.focusAreas]
-          : [],
-
-        taxStatus: record.taxStatus,
-      };
-    });
-
-    return Response.json(orgs);
-
+    return Response.json(result.rows.map(serializeRow));
   } catch (err) {
     console.error("GET ORGS ERROR:", err);
     return Response.json({ error: String(err) }, { status: 500 });
   }
 }
+
 export async function POST(req: Request) {
   try {
-    const prisma = getPrisma();
+    const pool = getPool();
     const body = await req.json();
 
-    console.log("POST /api/organizations body:", body);
-    console.log("POST /api/organizations body.geographies:", body?.geographies);
-    console.log("POST /api/organizations body.focusAreas:", body?.focusAreas);
-
+    const name = String(body?.name ?? "").trim();
+    const entityType = String(body?.entityType ?? "").trim();
+    const mission = String(body?.mission ?? "").trim();
     const geographies = ensureArray(body?.geographies);
     const focusAreas = ensureArray(body?.focusAreas);
+    const taxStatus = String(body?.taxStatus ?? "").trim();
 
-    const data = {
-      name: String(body.name ?? "").trim(),
-      entityType: String(body.entityType ?? "").trim(),
-      mission: String(body.mission ?? "").trim(),
-      geographies,
-      focusAreas,
-      taxStatus: String(body.taxStatus ?? "").trim(),
-    };
+    const result = await pool.query(
+      `
+      INSERT INTO "Organization" (
+        id,
+        name,
+        "entityType",
+        mission,
+        geographies,
+        "focusAreas",
+        "taxStatus"
+      )
+      VALUES (
+        gen_random_uuid()::text,
+        $1,
+        $2,
+        $3,
+        $4::text[],
+        $5::text[],
+        $6
+      )
+      RETURNING
+        id,
+        name,
+        "entityType",
+        mission,
+        geographies,
+        "focusAreas",
+        "taxStatus"
+      `,
+      [name, entityType, mission, geographies, focusAreas, taxStatus]
+    );
 
-    console.log("POST /api/organizations prisma.organization.create data:", data);
-
-    const record: PrismaOrganization = await prisma.organization.create({ data });
-    return Response.json(serializeOrganization(record));
+    return Response.json(serializeRow(result.rows[0]));
   } catch (err) {
     console.error("CREATE ORG ERROR:", err);
     return Response.json({ error: String(err) }, { status: 500 });
