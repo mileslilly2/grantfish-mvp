@@ -28,23 +28,46 @@ function serializeOrganization(record: PrismaOrganization): OrganizationResponse
 }
 
 export async function GET() {
-  console.log("ORGS_ROUTE_V3"); // 👈 ADD THIS LINE
   try {
     const prisma = getPrisma();
-    const records = await prisma.organization.findMany();
 
-    console.log("RECORDS RAW:", records);
-    console.log("IS ARRAY:", Array.isArray(records));
+    const raw = await prisma.organization.findMany();
 
+    console.log("RAW FROM PRISMA:", raw);
 
-    const orgs = records.map(serializeOrganization);
+    const records = Array.isArray(raw) ? raw : [];
+
+    const orgs = records.map((record) => {
+      return {
+        id: record.id,
+        name: record.name,
+        entityType: record.entityType,
+        mission: record.mission,
+
+        // 🔥 FORCE normalization HERE (not in serialize fn)
+        geographies: Array.isArray(record.geographies)
+          ? record.geographies
+          : record.geographies
+          ? [record.geographies]
+          : [],
+
+        focusAreas: Array.isArray(record.focusAreas)
+          ? record.focusAreas
+          : record.focusAreas
+          ? [record.focusAreas]
+          : [],
+
+        taxStatus: record.taxStatus,
+      };
+    });
+
     return Response.json(orgs);
+
   } catch (err) {
     console.error("GET ORGS ERROR:", err);
     return Response.json({ error: String(err) }, { status: 500 });
   }
 }
-
 export async function POST(req: Request) {
   try {
     const prisma = getPrisma();
