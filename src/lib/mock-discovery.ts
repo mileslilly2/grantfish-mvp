@@ -37,6 +37,67 @@ type TinyFishStreamEvent = TinyFishRunResponse & {
 
 type RawOpportunity = Record<string, unknown>;
 
+function truncateForError(value: string, maxLength = 180): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "(empty response body)";
+  }
+
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength)}...`
+    : normalized;
+}
+
+function tryParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function formatTinyFishHttpError(params: {
+  source: LiveSource;
+  status: number;
+  bodyText: string;
+  contentType: string | null;
+}): string {
+  const { source, status, bodyText, contentType } = params;
+  const parsed = tryParseJson(bodyText);
+
+  if (parsed && typeof parsed === "object") {
+    const record = parsed as Record<string, unknown>;
+    const message =
+      stableText(record.message) ||
+      stableText(record.error) ||
+      stableText(record.detail);
+
+    if (message) {
+      return `${source.name} TinyFish upstream error (${status}): ${message}`;
+    }
+  }
+
+  const responseKind =
+    contentType && contentType.toLowerCase().includes("json")
+      ? "JSON"
+      : "non-JSON";
+
+  return `${source.name} TinyFish upstream error (${status}, ${responseKind} response): ${truncateForError(bodyText)}`;
+}
+
+function parseTinyFishStreamEvent(
+  rawPayload: string,
+  source: LiveSource
+): TinyFishStreamEvent {
+  try {
+    return JSON.parse(rawPayload) as TinyFishStreamEvent;
+  } catch {
+    throw new Error(
+      `${source.name} TinyFish returned a non-JSON stream event: ${truncateForError(rawPayload)}`
+    );
+  }
+}
+
 function hasOpportunityArray(
   value: unknown
 ): value is { opportunities: RawOpportunity[] } {
@@ -323,8 +384,28 @@ async function runTinyFishSource(
   });
 
   if (!start.ok) {
-    const text = await start.text();
-    throw new Error(`${source.name} TinyFish run failed: ${start.status} ${text}`);
+    const bodyText = await start.text();
+    throw new Error(
+      formatTinyFishHttpError({
+        source,
+        status: start.status,
+        bodyText,
+        contentType: start.headers.get("content-type"),
+      })
+    );
+  }
+
+  const contentType = start.headers.get("content-type");
+  if (
+    contentType &&
+    !contentType.toLowerCase().includes("text/event-stream")
+  ) {
+    const bodyText = await start.text();
+    throw new Error(
+      `${source.name} TinyFish returned a non-stream response (${
+        start.status
+      }, ${contentType}): ${truncateForError(bodyText)}`
+    );
   }
 
   if (!start.body) {
@@ -346,7 +427,7 @@ async function runTinyFishSource(
       return false;
     }
 
-    const event = JSON.parse(dataLines.join("\n")) as TinyFishStreamEvent;
+    const event = parseTinyFishStreamEvent(dataLines.join("\n"), source);
     const eventType = stableText(event.type);
 
     if (eventType === "PROGRESS") {
@@ -399,13 +480,22 @@ async function runTinyFishSource(
     throw new Error(`${source.name} TinyFish stream ended without a COMPLETE event`);
   }
 
-  const payload = result;
+  const payload =
+    typeof result === "string" ? tryParseJson(result) ?? result : result;
 
   const items: RawOpportunity[] = Array.isArray(payload)
     ? payload as RawOpportunity[]
     : hasOpportunityArray(payload)
     ? payload.opportunities
     : [];
+
+  if (items.length === 0) {
+    throw new Error(
+      `${source.name} TinyFish returned a malformed success payload: ${truncateForError(
+        typeof result === "string" ? result : JSON.stringify(result)
+      )}`
+    );
+  }
 
   return safeArray<RawOpportunity>(items)
     .map((item) => normalizeOpportunity(item, source))
