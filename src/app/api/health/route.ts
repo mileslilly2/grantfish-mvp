@@ -1,14 +1,15 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { getPrisma } from "@/lib/db";
+import { ensureActiveAppSchema, getPool } from "@/lib/pg";
 
 export async function GET() {
-  const prisma = await getPrisma();
-  const result = await prisma.$queryRaw<Array<{ now: Date }>>`SELECT NOW() as now`;
+  const pool = getPool();
+  await ensureActiveAppSchema();
+  const result = await pool.query<{ now: Date }>(`SELECT NOW() as now`);
 
   return NextResponse.json({
     ok: true,
-    dbTime: result[0]?.now ?? null,
+    dbTime: result.rows[0]?.now ?? null,
   });
 }

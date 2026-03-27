@@ -2,7 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { fetchMatches, fetchOrganizations, runDiscovery } from "@/lib/api";
+import {
+  fetchDiscoveryLogs,
+  fetchMatches,
+  fetchOrganizations,
+  runDiscovery,
+} from "@/lib/api";
+import type { DiscoveryLogEntry } from "@/lib/api";
 import type { Match } from "@/lib/api";
 import type { Organization } from "@/types/organization";
 
@@ -33,6 +39,10 @@ export default function DiscoverPage() {
   const [matchLoading, setMatchLoading] = useState(false);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [logs, setLogs] = useState<DiscoveryLogEntry[]>([]);
+  const [lastDiscoveryCompletedAt, setLastDiscoveryCompletedAt] = useState<string | null>(
+    null
+  );
   const [createOrgForm, setCreateOrgForm] = useState<CreateOrganizationForm>({
     name: "",
     entityType: "nonprofit",
@@ -67,6 +77,33 @@ export default function DiscoverPage() {
 
     loadOrganizations();
   }, []);
+
+  useEffect(() => {
+    if (!discoveryLoading) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadLogs() {
+      try {
+        const data = await fetchDiscoveryLogs();
+        if (!cancelled) {
+          setLogs(Array.isArray(data) ? data : []);
+        }
+      } catch {
+        // Ignore polling failures while discovery is running.
+      }
+    }
+
+    loadLogs();
+    const interval = window.setInterval(loadLogs, 800);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [discoveryLoading]);
 
   useEffect(() => {
     if (!organizationId) {
@@ -165,9 +202,13 @@ export default function DiscoverPage() {
     try {
       setDiscoveryLoading(true);
       setMessage("");
+      setLogs([]);
 
       const result = await runDiscovery(organizationId);
       await loadMatchesForOrganization(organizationId);
+      const latestLogs = await fetchDiscoveryLogs().catch(() => []);
+      setLogs(Array.isArray(latestLogs) ? latestLogs : []);
+      setLastDiscoveryCompletedAt(new Date().toISOString());
 
       const modeLabel =
         result.mode === "live"
@@ -272,9 +313,31 @@ export default function DiscoverPage() {
               </button>
             </div>
 
+            <div className="min-h-[88px] overflow-y-auto rounded-lg bg-black p-3 font-mono text-xs text-green-400">
+              {logs.length > 0 ? (
+                logs.map((log, index) => (
+                  <div key={`${log.step}-${index}`}>
+                    {">"} {log.step}
+                    {typeof log.duration === "number"
+                      ? ` (${Math.round(log.duration)}ms)`
+                      : ""}
+                  </div>
+                ))
+              ) : (
+                <div>{">"} Discovery activity will appear here.</div>
+              )}
+            </div>
+
             {message ? (
               <div className="rounded-lg bg-gray-100 px-3 py-2 text-sm">
                 {message}
+              </div>
+            ) : null}
+
+            {lastDiscoveryCompletedAt ? (
+              <div className="text-sm text-gray-600">
+                Last discovery completed at{" "}
+                {new Date(lastDiscoveryCompletedAt).toLocaleString()}.
               </div>
             ) : null}
           </section>

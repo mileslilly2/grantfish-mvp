@@ -1,34 +1,6 @@
-import { ensureArray } from "@/lib/ensure-array";
-import { getPool } from "@/lib/pg";
-import { scoreOpportunity } from "@/lib/scoring";
+import { ensureActiveAppSchema, getPool } from "@/lib/pg";
 
 export const runtime = "nodejs";
-
-function normalizeOrg(row: any) {
-  return {
-    id: String(row.id),
-    mission: String(row.mission ?? ""),
-    entity_type: String(row.entityType ?? ""),
-    tax_status: String(row.taxStatus ?? ""),
-    focus_areas: ensureArray(row.focusAreas),
-    geographies: ensureArray(row.geographies),
-  };
-}
-
-function normalizeOpp(row: any) {
-  return {
-    id: String(row.id),
-    title: String(row.title ?? ""),
-    summary: String(row.description ?? ""),
-    source_name: String(row.agency ?? ""),
-    funder_name: String(row.agency ?? ""),
-    location_scope: ensureArray(row.geographies).join(", "),
-    deadline_at: row.deadline ?? null,
-    extracted_fields: {
-      mission_areas: ensureArray(row.focusAreas),
-    },
-  };
-}
 
 export async function GET(req: Request) {
   try {
@@ -40,17 +12,12 @@ export async function GET(req: Request) {
     }
 
     const pool = getPool();
+    await ensureActiveAppSchema();
 
     const orgResult = await pool.query(
       `
-      SELECT
-        id,
-        mission,
-        "entityType",
-        "taxStatus",
-        geographies,
-        "focusAreas"
-      FROM "Organization"
+      SELECT id
+      FROM organization_profiles
       WHERE id = $1
       `,
       [orgId]
@@ -60,38 +27,51 @@ export async function GET(req: Request) {
       return Response.json({ error: "Org not found" }, { status: 404 });
     }
 
-    const org = normalizeOrg(orgResult.rows[0]);
-
-    const oppResult = await pool.query(`
+    const oppResult = await pool.query(
+      `
       SELECT
-        id,
-        title,
-        description,
-        agency,
-        geographies,
-        "focusAreas",
-        deadline
-      FROM "Opportunity"
-    `);
+        o.id AS "opportunityId",
+        o.title,
+        m.fit_score AS score,
+        m.fit_reasons AS reasons
+      FROM opportunity_matches m
+      JOIN opportunities o ON o.id = m.opportunity_id
+      WHERE m.organization_profile_id = $1
+        AND m.hidden = false
+      ORDER BY m.fit_score DESC, o.created_at DESC
+      `,
+      [orgId]
+    );
 
-    const opportunities = oppResult.rows.map(normalizeOpp);
-
-    const matches = opportunities.map((opp) => {
-      const result = scoreOpportunity(opp, org);
-
-      return {
-        opportunityId: opp.id,
-        title: opp.title,
-        score: result.fitScore,
-        reasons: result.fitReasons,
-      };
-    });
-
-    matches.sort((a, b) => b.score - a.score);
-
-    return Response.json(matches);
+    return Response.json(
+      oppResult.rows.map((row) => ({
+        opportunityId: String(row.opportunityId ?? ""),
+        title: String(row.title ?? ""),
+        score: Number(row.score ?? 0),
+        reasons: ensureReasonArray(row.reasons),
+      }))
+    );
   } catch (err) {
     console.error("MATCH ERROR:", err);
     return Response.json({ error: String(err) }, { status: 500 });
   }
+}
+
+function ensureReasonArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry)).filter(Boolean);
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed)
+        ? parsed.map((entry) => String(entry)).filter(Boolean)
+        : [];
+    } catch {
+      return value.trim() ? [value.trim()] : [];
+    }
+  }
+
+  return [];
 }

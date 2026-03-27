@@ -26,6 +26,12 @@ export type DiscoveryRunResult = {
   opportunityIds: string[];
 };
 
+export type DiscoveryLogEntry = {
+  step: string;
+  status: "pending" | "done";
+  duration?: number;
+};
+
 export async function fetchMatches(orgId: string): Promise<Match[]> {
   const res = await fetch(`/api/match?orgId=${orgId}`);
 
@@ -54,4 +60,14 @@ export async function runDiscovery(
   }
 
   return data;
+}
+
+export async function fetchDiscoveryLogs(): Promise<DiscoveryLogEntry[]> {
+  const res = await fetch("/api/logs", { cache: "no-store" });
+
+  if (!res.ok) {
+    throw new Error("Failed to fetch discovery logs");
+  }
+
+  return res.json();
 }

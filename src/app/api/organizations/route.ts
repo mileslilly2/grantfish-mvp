@@ -1,5 +1,5 @@
 import { ensureArray } from "@/lib/ensure-array";
-import { getPool } from "@/lib/pg";
+import { ensureActiveAppSchema, getPool } from "@/lib/pg";
 
 export const runtime = "nodejs";
 
@@ -17,28 +17,29 @@ function serializeRow(row: Record<string, unknown>): OrganizationResponse {
   return {
     id: String(row.id ?? ""),
     name: String(row.name ?? ""),
-    entityType: String(row.entityType ?? ""),
+    entityType: String(row.entityType ?? row.entity_type ?? ""),
     mission: String(row.mission ?? ""),
     geographies: ensureArray(row.geographies),
-    focusAreas: ensureArray(row.focusAreas),
-    taxStatus: String(row.taxStatus ?? ""),
+    focusAreas: ensureArray(row.focusAreas ?? row.focus_areas),
+    taxStatus: String(row.taxStatus ?? row.tax_status ?? ""),
   };
 }
 
 export async function GET() {
   try {
     const pool = getPool();
+    await ensureActiveAppSchema();
 
     const result = await pool.query(`
       SELECT
         id,
         name,
-        "entityType",
+        entity_type AS "entityType",
         mission,
         geographies,
-        "focusAreas",
-        "taxStatus"
-      FROM "Organization"
+        focus_areas AS "focusAreas",
+        tax_status AS "taxStatus"
+      FROM organization_profiles
       ORDER BY name ASC
     `);
 
@@ -52,6 +53,7 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const pool = getPool();
+    await ensureActiveAppSchema();
     const body = await req.json();
 
     const name = String(body?.name ?? "").trim();
@@ -63,17 +65,15 @@ export async function POST(req: Request) {
 
     const result = await pool.query(
       `
-      INSERT INTO "Organization" (
-        id,
+      INSERT INTO organization_profiles (
         name,
-        "entityType",
+        entity_type,
         mission,
         geographies,
-        "focusAreas",
-        "taxStatus"
+        focus_areas,
+        tax_status
       )
       VALUES (
-        gen_random_uuid()::text,
         $1,
         $2,
         $3,
@@ -84,11 +84,11 @@ export async function POST(req: Request) {
       RETURNING
         id,
         name,
-        "entityType",
+        entity_type AS "entityType",
         mission,
         geographies,
-        "focusAreas",
-        "taxStatus"
+        focus_areas AS "focusAreas",
+        tax_status AS "taxStatus"
       `,
       [name, entityType, mission, geographies, focusAreas, taxStatus]
     );

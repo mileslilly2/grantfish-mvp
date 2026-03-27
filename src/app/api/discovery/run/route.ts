@@ -1,8 +1,10 @@
 export const runtime = "nodejs";
 
 import { ensureArray } from "@/lib/ensure-array";
+import { addLog, clearLogs } from "@/lib/logStore";
 import { runMockGrantDiscovery } from "@/lib/mock-discovery";
-import { getPool } from "@/lib/pg";
+import { ensureActiveAppSchema, getPool } from "@/lib/pg";
+import { scoreOpportunity } from "@/lib/scoring";
 
 type RequestBody = {
   organizationId?: string;
@@ -16,53 +18,18 @@ type OrganizationRow = {
   entityType: string;
   geographies: unknown;
   focusAreas: unknown;
-  taxStatus: string;
+  taxStatus: string | null;
 };
 
-function textList(values: Array<string | null | undefined>): string[] {
-  return values.map((value) => String(value ?? "").trim()).filter(Boolean);
-}
-
-function deriveGeographies(
-  row: Awaited<ReturnType<typeof runMockGrantDiscovery>>[number]
-): string[] {
-  const metadata = row.metadata ?? {};
-  const locationScope =
-    typeof metadata.location_scope === "string" ? metadata.location_scope : null;
-  const region = typeof metadata.region === "string" ? metadata.region : null;
-  const countryValue = typeof metadata.country === "string" ? metadata.country : null;
-  const country =
-    countryValue === "US" ? "United States" : countryValue;
-
-  return Array.from(new Set(textList([locationScope, region, country])));
-}
-
-function deriveDescription(
-  row: Awaited<ReturnType<typeof runMockGrantDiscovery>>[number]
-): string {
-  const parts = textList([row.summary, row.eligibilityText, row.requirementsText]);
-  return parts.join("\n\n");
-}
-
-function deriveAmount(
-  row: Awaited<ReturnType<typeof runMockGrantDiscovery>>[number]
-): number | null {
-  const preferred = row.amountMax ?? row.amountMin;
-  if (typeof preferred !== "number" || !Number.isFinite(preferred)) {
-    return null;
-  }
-
-  return Math.round(preferred);
-}
-
-function deriveFocusAreas(
-  row: Awaited<ReturnType<typeof runMockGrantDiscovery>>[number]
-): string[] {
-  return ensureArray(row.extractedFields?.mission_areas);
-}
+type OpportunityRow = {
+  id: string;
+};
 
 export async function POST(req: Request) {
   try {
+    clearLogs();
+    addLog("Starting discovery run");
+
     const body = (await req.json().catch(() => ({}))) as RequestBody;
     const organizationId = String(body.organizationId ?? body.orgId ?? "").trim();
 
@@ -71,17 +38,18 @@ export async function POST(req: Request) {
     }
 
     const pool = getPool();
+    await ensureActiveAppSchema();
     const orgResult = await pool.query<OrganizationRow>(
       `
       SELECT
         id,
         name,
         mission,
-        "entityType",
+        entity_type AS "entityType",
         geographies,
-        "focusAreas",
-        "taxStatus"
-      FROM "Organization"
+        focus_areas AS "focusAreas",
+        tax_status AS "taxStatus"
+      FROM organization_profiles
       WHERE id = $1
       `,
       [organizationId]
@@ -92,99 +60,177 @@ export async function POST(req: Request) {
     }
 
     const organization = orgResult.rows[0];
+    addLog("Loaded organization");
     console.info(
       `[discovery-route] starting discovery for organizationId=${organizationId}`
     );
 
+    addLog("Running discovery");
     const discovered = await runMockGrantDiscovery({
       mission: organization.mission,
       focusAreas: ensureArray(organization.focusAreas),
       geographies: ensureArray(organization.geographies),
     });
+    addLog(`Discovered ${discovered.length} opportunities`);
+    addLog("Saving opportunities");
 
     let savedCount = 0;
     const savedOpportunityIds: string[] = [];
 
     for (const item of discovered) {
-      const title = item.title.trim();
-      const agency = String(item.funderName ?? item.sourceName ?? "").trim();
-      const description = deriveDescription(item);
-      const geographies = deriveGeographies(item);
-      const focusAreas = deriveFocusAreas(item);
-      const amount = deriveAmount(item);
-      const deadline = item.deadlineAt ? new Date(item.deadlineAt) : null;
-
-      const existing = await pool.query<{ id: string }>(
+      const upsertResult = await pool.query<OpportunityRow>(
         `
-        SELECT id
-        FROM "Opportunity"
-        WHERE title = $1
-          AND agency = $2
-          AND (
-            (deadline IS NULL AND $3::timestamptz IS NULL)
-            OR deadline = $3
-          )
-        LIMIT 1
-        `,
-        [title, agency, deadline]
-      );
-
-      if (existing.rows.length > 0) {
-        const updateResult = await pool.query<{ id: string }>(
-          `
-          UPDATE "Opportunity"
-          SET
-            description = $2,
-            geographies = $3::text[],
-            "focusAreas" = $4::text[],
-            amount = $5,
-            deadline = $6
-          WHERE id = $1
-          RETURNING id
-          `,
-          [
-            existing.rows[0].id,
-            description,
-            geographies,
-            focusAreas,
-            amount,
-            deadline,
-          ]
-        );
-
-        savedOpportunityIds.push(updateResult.rows[0].id);
-        savedCount += 1;
-        continue;
-      }
-
-      const insertResult = await pool.query<{ id: string }>(
-        `
-        INSERT INTO "Opportunity" (
-          id,
+        INSERT INTO opportunities (
+          type,
+          source_name,
+          source_type,
+          source_url,
+          canonical_url,
           title,
-          description,
-          agency,
-          geographies,
-          "focusAreas",
-          amount,
-          deadline
+          summary,
+          status,
+          deadline_at,
+          location_scope,
+          country,
+          region,
+          funder_name,
+          amount_min,
+          amount_max,
+          currency,
+          eligibility_text,
+          requirements_text,
+          application_url,
+          extracted_fields,
+          metadata,
+          dedupe_key
         )
         VALUES (
-          gen_random_uuid()::text,
           $1,
           $2,
           $3,
-          $4::text[],
-          $5::text[],
+          $4,
+          $5,
           $6,
-          $7
+          $7,
+          $8,
+          $9,
+          $10,
+          $11,
+          $12,
+          $13,
+          $14,
+          $15,
+          $16,
+          $17,
+          $18,
+          $19,
+          $20::jsonb,
+          $21::jsonb,
+          $22
         )
+        ON CONFLICT (dedupe_key)
+        DO UPDATE SET
+          source_name = EXCLUDED.source_name,
+          source_type = EXCLUDED.source_type,
+          source_url = EXCLUDED.source_url,
+          canonical_url = EXCLUDED.canonical_url,
+          title = EXCLUDED.title,
+          summary = EXCLUDED.summary,
+          status = EXCLUDED.status,
+          deadline_at = EXCLUDED.deadline_at,
+          location_scope = EXCLUDED.location_scope,
+          country = EXCLUDED.country,
+          region = EXCLUDED.region,
+          funder_name = EXCLUDED.funder_name,
+          amount_min = EXCLUDED.amount_min,
+          amount_max = EXCLUDED.amount_max,
+          currency = EXCLUDED.currency,
+          eligibility_text = EXCLUDED.eligibility_text,
+          requirements_text = EXCLUDED.requirements_text,
+          application_url = EXCLUDED.application_url,
+          extracted_fields = EXCLUDED.extracted_fields,
+          metadata = EXCLUDED.metadata,
+          last_seen_at = now(),
+          updated_at = now()
         RETURNING id
         `,
-        [title, description, agency, geographies, focusAreas, amount, deadline]
+        [
+          item.type,
+          item.sourceName,
+          item.sourceType,
+          item.sourceUrl,
+          item.canonicalUrl,
+          item.title.trim(),
+          item.summary ?? null,
+          item.status ?? "unknown",
+          item.deadlineAt ? new Date(item.deadlineAt) : null,
+          item.locationScope ?? null,
+          item.country ?? null,
+          item.region ?? null,
+          item.funderName ?? null,
+          item.amountMin ?? null,
+          item.amountMax ?? null,
+          item.currency ?? "USD",
+          item.eligibilityText ?? null,
+          item.requirementsText ?? null,
+          item.applicationUrl ?? null,
+          JSON.stringify(item.extractedFields ?? {}),
+          JSON.stringify(item.metadata ?? {}),
+          item.dedupeKey,
+        ]
       );
 
-      savedOpportunityIds.push(insertResult.rows[0].id);
+      const score = scoreOpportunity(
+        {
+          title: item.title,
+          summary: item.summary ?? null,
+          eligibility_text: item.eligibilityText ?? null,
+          requirements_text: item.requirementsText ?? null,
+          source_name: item.sourceName,
+          funder_name: item.funderName ?? null,
+          location_scope: item.locationScope ?? null,
+          country: item.country ?? null,
+          region: item.region ?? null,
+          status: item.status ?? null,
+          deadline_at: item.deadlineAt ?? null,
+          extracted_fields: item.extractedFields ?? null,
+        },
+        {
+          mission: organization.mission,
+          focus_areas: ensureArray(organization.focusAreas),
+          geographies: ensureArray(organization.geographies),
+          entity_type: organization.entityType,
+          tax_status: organization.taxStatus,
+        }
+      );
+
+      await pool.query(
+        `
+        INSERT INTO opportunity_matches (
+          organization_profile_id,
+          opportunity_id,
+          fit_score,
+          fit_reasons,
+          confidence_score
+        )
+        VALUES ($1, $2, $3, $4::jsonb, $5)
+        ON CONFLICT (organization_profile_id, opportunity_id)
+        DO UPDATE SET
+          fit_score = EXCLUDED.fit_score,
+          fit_reasons = EXCLUDED.fit_reasons,
+          confidence_score = EXCLUDED.confidence_score,
+          updated_at = now()
+        `,
+        [
+          organizationId,
+          upsertResult.rows[0].id,
+          score.fitScore,
+          JSON.stringify(score.fitReasons),
+          score.confidenceScore,
+        ]
+      );
+
+      savedOpportunityIds.push(upsertResult.rows[0].id);
       savedCount += 1;
     }
 
@@ -197,6 +243,10 @@ export async function POST(req: Request) {
         usedLive ? "live" : "mock"
       } discovered=${discovered.length} saved=${savedCount}`
     );
+    addLog(
+      `Completed ${usedLive ? "live TinyFish" : "mock fallback"} discovery`
+    );
+    addLog(`Saved ${savedCount} opportunities`);
 
     return Response.json({
       organizationId,
@@ -207,6 +257,7 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     console.error("DISCOVERY RUN ERROR:", err);
+    addLog("Discovery failed");
     return Response.json({ error: String(err) }, { status: 500 });
   }
 }

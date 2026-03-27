@@ -506,6 +506,7 @@ export async function runMockGrantDiscovery(
   );
 
   if (!config.useLive) {
+    addLog("Live TinyFish disabled; using mock fallback");
     console.warn(
       `[discovery] using mock fallback because live discovery is disabled by GRANTFISH_USE_LIVE_TINYFISH=${config.rawFlag || "<unset>"}`
     );
@@ -513,12 +514,14 @@ export async function runMockGrantDiscovery(
   }
 
   if (!config.hasKey) {
+    addLog("TinyFish API key missing; using mock fallback");
     console.warn(
       "[discovery] using mock fallback because TINYFISH_API_KEY is missing"
     );
     return getMockFallback();
   }
 
+  addLog("Attempting live TinyFish discovery");
   console.info(
     `[discovery] attempting live TinyFish discovery via ${config.baseUrl}`
   );
@@ -532,6 +535,7 @@ export async function runMockGrantDiscovery(
   );
 
   if (liveResults.length > 0) {
+    addLog(`Live TinyFish returned ${liveResults.length} results before dedupe`);
     console.info(
       `[discovery] live TinyFish discovery succeeded with ${liveResults.length} normalized opportunities before dedupe`
     );
@@ -547,6 +551,7 @@ export async function runMockGrantDiscovery(
       errors.length > 0 ? errors.join(" | ") : "No live opportunities returned"
     }`
   );
+  addLog("All live TinyFish sources failed");
 
   throw new Error(
     errors.length > 0
