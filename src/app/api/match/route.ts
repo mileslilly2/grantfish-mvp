@@ -1,102 +1,97 @@
-import type {
-  Opportunity as PrismaOpportunity,
-  Organization as PrismaOrganization,
-} from "@prisma/client";
-import { NextRequest, NextResponse } from "next/server";
-
-import { getPrisma } from "@/lib/db";
+import { ensureArray } from "@/lib/ensure-array";
+import { getPool } from "@/lib/pg";
+import { scoreOpportunity } from "@/lib/scoring";
 
 export const runtime = "nodejs";
 
-type OrganizationResponse = {
-  id: string;
-  name: string;
-  entityType: string;
-  mission: string;
-  geographies: string[];
-  focusAreas: string[];
-  taxStatus: string;
-};
+function normalizeOrg(row: any) {
+  return {
+    id: String(row.id),
+    mission: String(row.mission ?? ""),
+    entity_type: String(row.entityType ?? ""),
+    tax_status: String(row.taxStatus ?? ""),
+    focus_areas: ensureArray(row.focusAreas),
+    geographies: ensureArray(row.geographies),
+  };
+}
 
-type OpportunityResponse = {
-  id: string;
-  title: string;
-  description: string;
-  agency: string;
-  geographies: string[];
-  focusAreas: string[];
-  amount?: number;
-  deadline?: string;
-  createdAt: string;
-};
+function normalizeOpp(row: any) {
+  return {
+    id: String(row.id),
+    title: String(row.title ?? ""),
+    summary: String(row.description ?? ""),
+    source_name: String(row.agency ?? ""),
+    funder_name: String(row.agency ?? ""),
+    location_scope: ensureArray(row.geographies).join(", "),
+    deadline_at: row.deadline ?? null,
+    extracted_fields: {
+      mission_areas: ensureArray(row.focusAreas),
+    },
+  };
+}
 
-type MatchResult = {
-  opportunity: OpportunityResponse;
-  score: number;
-};
-
-export async function GET(req: NextRequest) {
+export async function GET(req: Request) {
   try {
-    const [{ ensureArray, safeArray }, { scoreMatch }] = await Promise.all([
-      import("@/lib/ensure-array"),
-      import("@/lib/match"),
-    ]);
-    const prisma = getPrisma();
-    const orgId = req.nextUrl.searchParams.get("orgId");
+    const url = new URL(req.url);
+    const orgId = url.searchParams.get("orgId");
 
     if (!orgId) {
-      return NextResponse.json({ error: "orgId is required" }, { status: 400 });
+      return Response.json({ error: "Missing orgId" }, { status: 400 });
     }
 
-    const orgRecord = await prisma.organization.findUnique({
-      where: { id: orgId },
-    });
+    const pool = getPool();
 
-    if (!orgRecord) {
-      return NextResponse.json({ error: "Organization not found" }, { status: 404 });
+    const orgResult = await pool.query(
+      `
+      SELECT
+        id,
+        mission,
+        "entityType",
+        "taxStatus",
+        geographies,
+        "focusAreas"
+      FROM "Organization"
+      WHERE id = $1
+      `,
+      [orgId]
+    );
+
+    if (orgResult.rows.length === 0) {
+      return Response.json({ error: "Org not found" }, { status: 404 });
     }
 
-    const opportunityRecords = await prisma.opportunity.findMany({
-      orderBy: { createdAt: "desc" },
+    const org = normalizeOrg(orgResult.rows[0]);
+
+    const oppResult = await pool.query(`
+      SELECT
+        id,
+        title,
+        description,
+        agency,
+        geographies,
+        "focusAreas",
+        deadline
+      FROM "Opportunity"
+    `);
+
+    const opportunities = oppResult.rows.map(normalizeOpp);
+
+    const matches = opportunities.map((opp) => {
+      const result = scoreOpportunity(opp, org);
+
+      return {
+        opportunityId: opp.id,
+        title: opp.title,
+        score: result.fitScore,
+        reasons: result.fitReasons,
+      };
     });
 
-    const serializeOrganization = (record: PrismaOrganization): OrganizationResponse => ({
-      id: record.id,
-      name: record.name,
-      entityType: record.entityType,
-      mission: record.mission,
-      geographies: ensureArray(record.geographies),
-      focusAreas: ensureArray(record.focusAreas),
-      taxStatus: record.taxStatus,
-    });
+    matches.sort((a, b) => b.score - a.score);
 
-    const serializeOpportunity = (record: PrismaOpportunity): OpportunityResponse => ({
-      id: record.id,
-      title: record.title,
-      description: record.description,
-      agency: record.agency,
-      geographies: ensureArray(record.geographies),
-      focusAreas: ensureArray(record.focusAreas),
-      amount: record.amount ?? undefined,
-      deadline: record.deadline?.toISOString(),
-      createdAt: record.createdAt.toISOString(),
-    });
-
-    const org = serializeOrganization(orgRecord);
-    const matches: MatchResult[] = safeArray<PrismaOpportunity>(opportunityRecords)
-      .map((record) => {
-        const opportunity = serializeOpportunity(record);
-
-        return {
-          opportunity,
-          score: scoreMatch(org, opportunity),
-        };
-      })
-      .sort((left, right) => right.score - left.score);
-
-    return NextResponse.json(matches);
+    return Response.json(matches);
   } catch (err) {
     console.error("MATCH ERROR:", err);
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return Response.json({ error: String(err) }, { status: 500 });
   }
 }

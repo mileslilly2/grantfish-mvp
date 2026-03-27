@@ -1,472 +1,521 @@
-# GrantFish MVP
+# GrantHunter
 
-## Overview
+GrantHunter is a Next.js App Router MVP for helping nonprofits find and rank grant opportunities. The repo currently supports a basic local workflow around creating organizations, inserting opportunity records, and scoring simple matches in PostgreSQL-backed API routes. The longer-term direction in this codebase is still grant discovery first, but the active end-to-end runtime is not yet the agent-first discovery pipeline.
 
-GrantFish is a Next.js + PostgreSQL MVP for discovering and ranking grant opportunities for nonprofit organizations.
+## Current Status
 
-The current system is built around a simple workflow:
+- What works now:
+  - `GET`/`POST /api/organizations` reads and writes organizations in the Prisma-backed `"Organization"` table.
+  - `GET`/`POST /api/opportunities` reads and writes opportunities in the Prisma-backed `"Opportunity"` table.
+  - `GET /api/match?orgId=...` computes flat scored matches on demand from `"Organization"` and `"Opportunity"` rows.
+  - `/discover` lets you select an organization, create an organization, seed three sample opportunities, and view ranked matches.
+  - `/api/health` verifies DB connectivity through Prisma.
+- What is in transition:
+  - The repo includes a newer SQL schema for `organization_profiles`, `opportunities`, `opportunity_matches`, `discovery_runs`, and related tables.
+  - The repo also includes a live/mock TinyFish discovery library in `src/lib/mock-discovery.ts`.
+  - Those newer discovery pieces are not the active runtime path today.
+- What is not yet complete:
+  - `POST /api/discovery/run` is present but returns `410 Gone`.
+  - The UI still promotes `"Seed 3 Opportunities"` instead of `"Run Discovery"`.
+  - The richer SQL schema and the current app routes are not aligned to the same tables or response shapes.
 
-1. Load a nonprofit organization profile from Postgres.
-2. Run a discovery pass against grant sources.
-3. Normalize and deduplicate the returned opportunities.
-4. Score each opportunity for organizational fit.
-5. Store opportunities and organization-specific matches in Postgres.
-6. Display ranked results in a minimal dashboard.
+## Current User-Visible Workflow
 
-In the default local setup, discovery uses mock fallback data. When live mode is enabled, the app calls TinyFish browser automation agents to search real grant sources such as Grants.gov, West Virginia state grants, and the National Endowment for the Arts.
+This is the current real flow in the repo today, not the intended future discovery-first loop:
 
-## Features
+1. Select an organization in `/discover`.
+2. Create an organization if needed.
+3. Click the current seed/demo action to insert sample opportunities.
+4. Fetch flat matches from `/api/match`.
+5. Review ranked results in the table.
 
-- Postgres-backed organization, opportunity, run, and match data model
-- Discovery API that runs a grant scan for a specific organization profile
-- TinyFish-based live browser automation path with mock fallback
-- Opportunity normalization and deduplication
-- Simple rules-based scoring with fit reasons and confidence score
-- Ranked opportunities API for dashboard consumption
-- Minimal Next.js App Router UI for triggering scans and viewing results
-- Schema designed to expand beyond grants into RFPs, jobs, gigs, and leads
+## Core Product Loop
 
-## Architecture
+Implemented now:
 
-The repository is a small full-stack Next.js application with the backend implemented as App Router API routes and shared library modules.
+1. Select an organization in `/discover`.
+2. Create an organization if needed.
+3. Insert sample opportunities through the UI seed button.
+4. Fetch flat scored matches from `/api/match`.
+5. Review ranked results in the table.
 
-- Frontend: Next.js App Router pages in `src/app`
-- Backend API: route handlers in `src/app/api`
-- Persistence: PostgreSQL accessed through `pg`
-- Discovery engine: `src/lib/mock-discovery.ts`
-- Scoring engine: `src/lib/scoring.ts`
-- Types: database, API, normalization, and scoring contracts in `src/types`
-- Schema: SQL bootstrap migration in `sql/001_init.sql`
+Partially implemented / intended next loop:
 
-### Main Modules
+1. Select organization.
+2. Run discovery.
+3. Normalize and save opportunities.
+4. Score matches.
+5. Review ranked results.
+
+That second loop is the target direction reflected in `src/lib/mock-discovery.ts` and `sql/001_init.sql`, but it is not wired through the active UI/API flow yet.
+
+## Near-Term Canonical Direction
+
+The repo currently has two competing data-model directions:
+
+- the active runtime path built around Prisma-style `"Organization"` / `"Opportunity"` tables plus `pg` route handlers
+- the broader discovery-first SQL schema built around `organization_profiles`, `opportunities`, `opportunity_matches`, and `discovery_runs`
+
+Near-term contributors should not try to advance both at once.
+
+The practical near-term goal is to keep one clearly named runtime path stable long enough to restore `POST /api/discovery/run` and make discovery work end-to-end again. After that, the repo can either:
+
+- fully commit to the current runtime table family, or
+- perform an explicit migration to the broader discovery-first schema
+
+Until that decision is made, avoid half-mixing Prisma-style `"Organization"` / `"Opportunity"` work with `organization_profiles` / `opportunity_matches` work in the same feature unless the migration itself is the task.
+
+## Current Architecture
+
+### Frontend
 
 - `src/app/page.tsx`
-  Landing page with a link to the discovery dashboard.
+  - marketing-style landing page
 - `src/app/discover/page.tsx`
-  Client-side dashboard for running scans and listing matched opportunities.
-- `src/app/api/discovery/run/route.ts`
-  POST endpoint that loads an organization profile, runs discovery, upserts opportunities, scores matches, and stores results.
+  - primary workflow page
+  - loads organizations with `fetchOrganizations()`
+  - loads matches with `fetchMatches()`
+  - creates organizations directly via `POST /api/organizations`
+  - seeds demo opportunities directly via `POST /api/opportunities`
+
+### API routes
+
+- `src/app/api/organizations/route.ts`
+  - active `pg` route against Prisma table `"Organization"`
 - `src/app/api/opportunities/route.ts`
-  GET endpoint that returns ranked opportunities for an organization profile.
+  - active `pg` route against Prisma table `"Opportunity"`
+- `src/app/api/match/route.ts`
+  - active scoring route
+  - reads `"Organization"` and `"Opportunity"`
+  - returns a flat array of `{ opportunityId, title, score, reasons }`
 - `src/app/api/health/route.ts`
-  Basic health check that verifies database connectivity.
-- `src/lib/mock-discovery.ts`
-  Contains the source registry for live grant sources, TinyFish integration, normalization helpers, deduplication, and mock fallback data.
-- `src/lib/scoring.ts`
-  Applies lightweight heuristic scoring based on mission areas, nonprofit eligibility, and geography.
+  - active Prisma connectivity check
+- `src/app/api/logs/route.ts`
+  - exposes in-memory log entries from `src/lib/logStore.ts`
+- `src/app/api/discovery/run/route.ts`
+  - explicitly quarantined
+  - returns `410`
+- `src/app/api/opportunity-matches/stage/route.ts`
+  - explicitly quarantined
+  - returns `410`
+
+### DB access layer
+
+- `src/lib/pg.ts`
+  - active shared `pg` pool helper for current app routes
 - `src/lib/db.ts`
-  Shared PostgreSQL connection pool.
+  - Prisma client helper
+  - currently used by `/api/health`
+- `src/lib/postgres.ts`
+  - extra `pg` pool singleton
+  - appears stale/inactive
 
-### Agent / Provider Integration
+### Scoring / matching
 
-There is one implemented agent provider path today: TinyFish.
+- `src/lib/scoring.ts`
+  - active heuristic scorer used by `/api/match`
+  - supports a richer scorable shape than the current route supplies
+- `src/lib/api.ts`
+  - frontend fetch helpers
+  - `Match` type is the current UI contract
+- `src/lib/match.ts`
+  - older simpler scoring helper
+  - not used by the active routes
 
-- Provider API base: `TINYFISH_BASE_URL` or `https://agent.tinyfish.ai`
-- Auth: `TINYFISH_API_KEY`
-- Mode switch: `GRANTFISH_USE_LIVE_TINYFISH=true`
+### Discovery / agent integration
 
-`src/lib/mock-discovery.ts` starts a TinyFish automation run, polls until completion, extracts `opportunities`, normalizes them into the app’s schema, and deduplicates by a stable SHA-256 key derived from source name, title, deadline, and canonical URL.
+- `src/lib/mock-discovery.ts`
+  - contains the current TinyFish integration and mock fallback logic
+  - can run live TinyFish source scans when env vars are set
+  - returns normalized opportunities
+  - is not called by the active API flow because `/api/discovery/run` is quarantined
 
-## Repository Structure
+### Seed / demo path
+
+- The real user-visible workflow today is still demo-oriented:
+  - create organization
+  - click `Seed 3 Opportunities`
+  - view computed matches
+
+### Important repo structure
 
 ```text
-grantfish-mvp/
-├── sql/
-│   └── 001_init.sql
-├── src/
-│   ├── app/
-│   │   ├── api/
-│   │   │   ├── discovery/run/route.ts
-│   │   │   ├── health/route.ts
-│   │   │   └── opportunities/route.ts
-│   │   ├── discover/page.tsx
-│   │   ├── globals.css
-│   │   ├── layout.tsx
-│   │   └── page.tsx
-│   ├── lib/
-│   │   ├── db.ts
-│   │   ├── mock-discovery.ts
-│   │   └── scoring.ts
-│   └── types/
-│       ├── api.ts
-│       ├── db.ts
-│       ├── normalized.ts
-│       └── scoring.ts
-├── package.json
-├── next.config.ts
-├── postcss.config.mjs
-├── tsconfig.json
-└── README.md
+src/
+  app/
+    api/
+      discovery/run/route.ts
+      health/route.ts
+      logs/route.ts
+      match/route.ts
+      opportunity-matches/stage/route.ts
+      opportunities/route.ts
+      organizations/route.ts
+    discover/page.tsx
+    page.tsx
+  lib/
+    api.ts
+    db.ts
+    ensure-array.ts
+    logStore.ts
+    match.ts
+    mock-discovery.ts
+    pg.ts
+    postgres.ts
+    scoring.ts
+  types/
+    api.ts
+    db.ts
+    normalized.ts
+    opportunity.ts
+    organization.ts
+prisma/
+  schema.prisma
+sql/
+  001_init.sql
+  002_seed_organizations.sql
 ```
 
-### Directory Guide
+## Key Routes / Endpoints
 
-- `sql/`
-  Database schema bootstrap SQL, including enums, tables, indexes, and update trigger helper.
-- `src/app/`
-  Next.js application shell, frontend pages, and API routes.
-- `src/lib/`
-  Runtime logic for database access, discovery, provider calls, normalization, and scoring.
-- `src/types/`
-  TypeScript contracts describing database records, normalized opportunities, scoring output, and API inputs.
+### App routes
 
-## Data Pipeline
+- `/`
+  - landing page
+  - stable
+- `/discover`
+  - main working UI for current MVP
+  - transitional
+  - stable enough for create/select/seed/match review, but not aligned to the intended discovery loop
 
-The current discovery pipeline looks like this:
+### API routes
 
-`organization_profiles`
-→ `/api/discovery/run`
-→ TinyFish live sources or mock fallback
-→ normalized opportunity objects
-→ deduplication by `dedupe_key`
-→ `opportunities` upsert
-→ heuristic scoring
-→ `opportunity_matches` upsert
-→ `/api/opportunities`
-→ `/discover` dashboard
+- `GET /api/organizations`
+  - list organizations from `"Organization"`
+  - stable
+- `POST /api/organizations`
+  - create organization in `"Organization"`
+  - stable
+- `GET /api/opportunities`
+  - list opportunities from `"Opportunity"`
+  - stable
+- `POST /api/opportunities`
+  - insert opportunity rows used by the current seed/demo flow
+  - transitional
+- `GET /api/match?orgId=...`
+  - score all current `"Opportunity"` rows against one organization and return a flat match array
+  - transitional
+- `GET /api/health`
+  - Prisma DB health check
+  - stable
+- `GET /api/logs`
+  - read in-memory TinyFish/discovery logs
+  - transitional
+- `DELETE /api/logs`
+  - clear in-memory logs
+  - transitional
+- `POST /api/discovery/run`
+  - intended discovery entrypoint
+  - currently returns `410`
+  - planned/incomplete
+- `PATCH /api/opportunity-matches/stage`
+  - intended richer match pipeline endpoint
+  - currently returns `410`
+  - planned/incomplete
 
-### Discovery Flow
+## Data Model Overview
 
-1. The dashboard sends `organizationProfileId` to `POST /api/discovery/run`.
-2. The API loads the organization profile from `organization_profiles`.
-3. `runMockGrantDiscovery()` decides whether to:
-   - return hard-coded mock opportunities, or
-   - run live TinyFish automations against built-in grant sources.
-4. Each result is normalized into a `NormalizedOpportunity`-shaped object.
-5. Opportunities are inserted into `opportunities`, or touched via `ON CONFLICT (dedupe_key)`.
-6. Each opportunity is scored against the organization profile.
-7. Matches are inserted or updated in `opportunity_matches`.
-8. The UI loads ranked rows through `GET /api/opportunities`.
+The repo is currently in a hybrid state with two competing models.
 
-### Current Live Source Registry
+### Active runtime model
 
-The MVP keeps the source registry inline in `src/lib/mock-discovery.ts`.
+Defined by `prisma/schema.prisma` and the active routes:
 
-- `Grants.gov`
-- `WV State Grants`
-- `National Endowment for the Arts`
+- `"Organization"`
+  - `id`
+  - `name`
+  - `entityType`
+  - `mission`
+  - `geographies`
+  - `focusAreas`
+  - `taxStatus`
+- `"Opportunity"`
+  - `id`
+  - `title`
+  - `description`
+  - `agency`
+  - `geographies`
+  - `focusAreas`
+  - `amount`
+  - `deadline`
+  - `createdAt`
 
-Each source defines:
+The current `/api/match` route does not persist match rows. It computes them on request.
 
-- `name`
-- `sourceType`
-- `url`
-- optional `browserProfile`
-- `goal(org)` prompt builder for the TinyFish agent
+### Broader SQL model present in repo but not active end-to-end
 
-## Database Schema
-
-The schema in `sql/001_init.sql` already models a broader opportunity platform than the current UI exposes.
-
-### Enums
-
-- `opportunity_type`: `grant`, `rfp`, `job`, `gig`, `lead`
-- `source_type`: `grant_portal`, `foundation_site`, `government_portal`, `job_board`, `gig_board`, `directory`, `custom`
-- `opportunity_status`: `open`, `closed`, `rolling`, `draft`, `unknown`
-- `run_status`: `queued`, `running`, `completed`, `failed`, `partial`
-- `pipeline_stage`: `new`, `review`, `shortlist`, `preparing`, `submitted`, `won`, `lost`, `archived`
-
-### Tables
+Defined by `sql/001_init.sql` and related types:
 
 - `organization_profiles`
-  Stores the target organization’s mission, geographies, focus areas, keywords, and document inventory.
 - `source_configs`
-  Stores configurable source metadata and agent instructions. Present in schema, but not yet wired into the current discovery route.
 - `discovery_runs`
-  Intended to track discovery executions, external run IDs, run logs, and counts. Present in schema, but not yet populated by the current route.
 - `opportunities`
-  Canonical opportunity records with source metadata, funding fields, eligibility text, and dedupe key.
 - `discovery_run_results`
-  Join table for raw payloads linked to discovery runs and opportunities. Present in schema, but not yet used in the MVP route.
 - `opportunity_matches`
-  Organization-specific fit scores, reasons, confidence, pipeline stage, notes, and flags such as `starred` and `hidden`.
 
-## Installation
+This broader schema is closer to the intended discovery-first architecture, but the active UI and routes are not currently using it.
 
-### Quick Start
+## Match/Scoring Shape
+
+The UI should currently target the flat match response returned by `GET /api/match`:
+
+```ts
+type Match = {
+  opportunityId: string;
+  title: string;
+  score: number;
+  reasons?: string[];
+};
+```
+
+Current reality:
+
+- `src/lib/api.ts` defines this flat `Match` type.
+- `src/app/discover/page.tsx` renders this flat shape directly.
+- `src/app/api/match/route.ts` returns exactly this flat shape.
+
+Possible future direction:
+
+- The SQL schema and `src/types/db.ts` imply a richer nested model with canonical `opportunity` records plus persisted `opportunity_matches`.
+- That richer shape is not the current UI contract.
+
+Contributor rule: keep the UI aligned to the flat response unless you intentionally update the route, fetch helper types, and consuming components together.
+
+## Discovery / Agent Integration
+
+Current state:
+
+- TinyFish is integrated in `src/lib/mock-discovery.ts`.
+- The library supports:
+  - live TinyFish runs against Grants.gov, WV State Grants, and NEA
+  - mock fallback opportunities when live mode is off or unavailable
+  - normalization into `NormalizedOpportunity`
+  - deduping by `dedupeKey`
+- The active app does not currently call this library in the main user flow.
+
+What is real today:
+
+- The discovery/agent code exists.
+- The route that should expose it, `POST /api/discovery/run`, is deliberately disabled with `410`.
+- The visible UX still uses manual demo inserts through `POST /api/opportunities`.
+
+Intended production path:
+
+- Restore a working `/api/discovery/run`.
+- Use agent-driven discovery as the main ingestion path.
+- Normalize and persist discovered opportunities.
+- Score and return matches against saved opportunity data.
+
+How this differs from the old seed-based flow:
+
+- Old/current UI flow: insert three hard-coded sample opportunities.
+- Intended flow: run source discovery, normalize/save, then score.
+
+## Local Development
+
+### Install
 
 ```bash
-git clone <your-repo-url>
-cd grantfish-mvp
 npm install
 ```
 
-Create a local environment file:
+### Required env vars
 
-```bash
-cp .env.local .env.local.backup 2>/dev/null || true
-```
-
-Then set these values in `.env.local`:
+There is no `.env.example` in the repo right now. The code references these variables:
 
 ```env
-DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DB_NAME
+DATABASE_URL=...
+GRANTFISH_USE_LIVE_TINYFISH=false
 TINYFISH_API_KEY=
 TINYFISH_BASE_URL=https://agent.tinyfish.ai
-GRANTFISH_USE_LIVE_TINYFISH=false
 ```
 
-Initialize the database schema:
+Notes:
+
+- `DATABASE_URL` is required.
+- `TINYFISH_API_KEY` is only needed if you intentionally re-enable live TinyFish discovery.
+- `GRANTFISH_USE_LIVE_TINYFISH` is only meaningful for `src/lib/mock-discovery.ts`, which is not in the active request path today.
+- Creating a `.env.example` is a high-value cleanup task.
+- That file should document only the env vars actually needed by the active runtime and the intended discovery path, not every historical or stale configuration possibility.
+
+### Database setup
+
+For the active runtime path, the app expects the Prisma table names in `prisma/schema.prisma`:
+
+- `"Organization"`
+- `"Opportunity"`
+
+The repo does not include a Prisma migration history. It does include `prisma/schema.prisma` and SQL seed data for those Prisma table names in `sql/002_seed_organizations.sql`.
+
+For the broader discovery-first schema, the repo also includes:
 
 ```bash
 psql "$DATABASE_URL" -f sql/001_init.sql
 ```
 
-Start the development server:
+That SQL schema is currently not aligned to the active `/discover` workflow.
+
+### Seed/setup
+
+If you want the current `/discover` page to be immediately usable:
+
+1. Ensure the `"Organization"` and `"Opportunity"` tables exist per `prisma/schema.prisma`.
+2. Optionally seed organizations with:
+
+```bash
+psql "$DATABASE_URL" -f sql/002_seed_organizations.sql
+```
+
+3. Use the UI button to insert three sample opportunities.
+
+### Run the app
 
 ```bash
 npm run dev
 ```
 
-Open `http://localhost:3000` and navigate to `/discover`.
-
-### Prerequisites
-
-- Node.js compatible with Next.js 16
-- npm
-- PostgreSQL
-- Optional TinyFish API access for live discovery
-
-## Configuration
-
-### Environment Variables
-
-- `DATABASE_URL`
-  PostgreSQL connection string used by `src/lib/db.ts`.
-- `TINYFISH_API_KEY`
-  Required only for live TinyFish discovery.
-- `TINYFISH_BASE_URL`
-  Optional override for the TinyFish API base URL. Defaults to `https://agent.tinyfish.ai`.
-- `GRANTFISH_USE_LIVE_TINYFISH`
-  Set to `true` to use TinyFish. Any other value keeps the app on mock fallback data.
-
-### Seed Data Requirement
-
-The discovery route requires an existing organization profile:
-
-```json
-{
-  "organizationProfileId": "..."
-}
-```
-
-The `/discover` page currently defaults to a hard-coded UUID:
-
-`fdb54db0-6de7-4974-8705-1562bb3c7447`
-
-You need to insert a matching row into `organization_profiles` before scans will succeed.
-
-Example seed:
-
-```sql
-INSERT INTO organization_profiles (
-  id,
-  name,
-  entity_type,
-  mission,
-  geographies,
-  focus_areas,
-  tax_status
-) VALUES (
-  'fdb54db0-6de7-4974-8705-1562bb3c7447',
-  'Example Nonprofit',
-  'nonprofit',
-  'Supports arts and youth programs in Appalachia.',
-  ARRAY['West Virginia', 'Appalachia'],
-  ARRAY['arts', 'youth', 'education'],
-  '501(c)(3)'
-);
-```
-
-## Running the Project
-
-### Application Commands
-
-Defined in `package.json`:
-
-- `npm run dev`
-  Starts the Next.js development server.
-- `npm run build`
-  Builds the production bundle.
-- `npm run start`
-  Starts the production server from the built app.
-- `npm run lint`
-  Runs ESLint.
-
-### API Routes
-
-- `GET /api/health`
-  Returns `{ ok: true, dbTime }` if the database is reachable.
-- `POST /api/discovery/run`
-  Runs discovery for a supplied `organizationProfileId`.
-- `GET /api/opportunities?organizationProfileId=<uuid>`
-  Returns up to 100 visible opportunities ordered by starred status, fit score, and deadline.
-
-### UI Flow
-
-1. Visit `/discover`.
-2. Enter an organization profile UUID.
-3. Click `Scan for Grants` to run discovery and scoring.
-4. Click `Load Saved Opportunities` to fetch stored matches without re-running discovery.
-
-## Adding Sources
-
-The current MVP does not yet load sources dynamically from `source_configs`; instead, live sources are defined inline in `src/lib/mock-discovery.ts`.
-
-To add a new source today:
-
-1. Add a new entry to `LIVE_SOURCES` in `src/lib/mock-discovery.ts`.
-2. Define:
-   - `name`
-   - `sourceType`
-   - `url`
-   - optional `browserProfile`
-   - `goal(org)` returning strict JSON extraction instructions
-3. Ensure the returned agent payload matches the expected `opportunities` array shape.
-4. Let `normalizeOpportunity()` map the raw agent result into the normalized app schema.
-5. Confirm the source yields a stable `canonicalUrl` and title so deduplication stays reliable.
-
-Example shape:
-
-```ts
-{
-  name: "Example Grants Portal",
-  sourceType: "government_portal",
-  url: "https://example.org/grants",
-  browserProfile: "lite",
-  goal: (org) => `...return JSON with opportunities...`
-}
-```
-
-### How Sources Plug Into the Pipeline
-
-- A source definition provides the target URL and extraction prompt.
-- TinyFish executes the browser automation run.
-- The response is normalized into internal opportunity objects.
-- Opportunities are deduplicated, scored, and persisted.
-
-### Future Refactor Path
-
-The schema suggests the intended next step:
-
-- move source definitions into `source_configs`
-- persist `discovery_runs`
-- store raw records in `discovery_run_results`
-- support source selection per run
-
-## Agent Providers
-
-### Current Provider Abstraction
-
-There is not yet a formal pluggable provider interface in a separate `providers/` directory. The current abstraction is implicit inside `src/lib/mock-discovery.ts`, where TinyFish is the live provider and mock data is the local fallback.
-
-The effective provider switch is:
-
-- mock mode: default, no external calls
-- TinyFish mode: enabled with `GRANTFISH_USE_LIVE_TINYFISH=true` and `TINYFISH_API_KEY`
-
-### How to Add Another Provider
-
-To introduce a second provider cleanly:
-
-1. Extract TinyFish logic from `runTinyFishSource()` into a provider module.
-2. Define a common interface such as:
-   - `runSource(source, org): Promise<NormalizedOpportunity[]>`
-3. Create one implementation per provider.
-4. Choose the provider through environment variables or source configuration.
-5. Keep normalization and deduplication provider-agnostic.
-
-### Switching Providers
-
-Today, switching is environment-driven:
-
-- keep `GRANTFISH_USE_LIVE_TINYFISH=false` for mock-only local development
-- set `GRANTFISH_USE_LIVE_TINYFISH=true` and provide a valid TinyFish key for live crawling
-
-## Extensibility
-
-Although the current UI and discovery prompts are grant-focused, the schema is intentionally broader.
-
-### Supported Future Domains
-
-The following domains are already represented in the enum design:
-
-- grants
-- RFPs / procurement
-- jobs
-- gigs
-- leads
-
-### Why the Architecture Supports Expansion
-
-- `opportunity_type` is not grant-specific.
-- `source_type` supports boards, portals, directories, and custom sources.
-- `opportunities` stores generic metadata plus structured fields for dates, amounts, location, requirements, and source provenance.
-- `opportunity_matches` is organization-centric rather than domain-centric.
-- `pipeline_stage` supports a pursuit workflow that can apply to funding, hiring, procurement, or lead qualification.
-
-To extend beyond grants, the main work would be:
-
-- adding domain-specific source definitions
-- adjusting extraction prompts
-- extending scoring heuristics
-- optionally tuning the frontend labels and filters
-
-## Development
-
-### Stack
-
-- Next.js 16 App Router
-- React 19
-- TypeScript
-- Tailwind CSS v4
-- PostgreSQL via `pg`
-
-### Notes on Current MVP State
-
-- The app is functional as a narrow MVP, not a fully generalized platform yet.
-- Some schema objects are forward-looking and not wired into the current request path.
-- The dashboard is intentionally minimal and optimized for manual testing of discovery and ranking.
-- There are no background workers, cron jobs, workflow files, or separate CLI utilities in the repository at this time.
-
-### Suggested Development Workflow
-
-1. Install dependencies with `npm install`.
-2. Configure `.env.local`.
-3. Apply `sql/001_init.sql` to your Postgres instance.
-4. Seed at least one `organization_profiles` row.
-5. Run `npm run dev`.
-6. Iterate on discovery prompts, normalization, scoring, and UI.
-7. Run `npm run lint` before committing changes.
-
-## Contributing
-
-Contributions should preserve the current design principle: infer conservatively from external sources, normalize aggressively, and avoid inventing data.
-
-Recommended contribution flow:
-
-1. Create a branch for your work.
-2. Make focused changes with tests or manual verification notes where appropriate.
-3. If you add a new source, document its extraction behavior and any assumptions.
-4. If you extend the schema, include a new SQL migration instead of editing historical migrations in place.
-5. Run `npm run lint` and verify the `/discover` flow against a real or seeded profile.
-6. Open a pull request with a concise summary of behavior changes.
-
-Areas that are especially good candidates for contribution:
-
-- source configuration management
-- persisted discovery run tracking
-- better opportunity scoring
-- improved dashboard filtering and editing
-- formal provider abstraction
-- test coverage
-
-## License
-
-No license is currently defined in this repository.
-
-Add your preferred license here, for example:
-
-- MIT
-- Apache-2.0
-- Proprietary
+Then open `http://localhost:3000` and use `/discover`.
+
+## Known Cleanup / Technical Debt
+
+- Mixed DB architecture:
+  - active routes use `pg` against Prisma-model tables
+  - `/api/health` uses Prisma
+  - broader SQL discovery schema exists separately
+- Discovery route is quarantined:
+  - `src/app/api/discovery/run/route.ts` returns `410`
+  - agent-first discovery is not the active runtime
+- UI/backend product-loop mismatch:
+  - `/discover` still says `Seed 3 Opportunities`
+  - current UX does not reflect the intended discovery-first flow
+- Response-shape coordination risk:
+  - UI, `src/lib/api.ts`, and `/api/match` currently depend on a flat match payload
+  - richer persisted-match types exist elsewhere
+- Duplicate DB utilities:
+  - `src/lib/pg.ts` and `src/lib/postgres.ts`
+- Stale or partially active helper surface:
+  - `src/lib/match.ts` is not the active scorer
+  - `src/types/api.ts` and `src/types/db.ts` model a broader system than the runtime currently exposes
+- Incomplete config/docs surface:
+  - no `.env.example`
+  - no root `AGENTS.md` existed before this cleanup pass
+
+## Recommended Path Forward
+
+### 1. Align the discover UI to the current flat match contract
+
+- Why it matters:
+  - the active route returns a flat match array, and the UI should treat that as the source of truth until the API changes
+- Likely files:
+  - `src/app/discover/page.tsx`
+  - `src/lib/api.ts`
+- Done looks like:
+  - the UI copy and actions reflect the actual current flow
+  - no component assumes richer persisted match records that do not exist yet
+
+### 2. Replace the visible seed-first workflow with a real discovery entry action
+
+- Why it matters:
+  - the repo direction is agent-first discovery, but the UI still trains contributors toward demo-only data insertion
+- Likely files:
+  - `src/app/discover/page.tsx`
+  - `src/app/api/discovery/run/route.ts`
+  - `src/lib/api.ts`
+  - `src/lib/mock-discovery.ts`
+- Done looks like:
+  - the main button is `Run Discovery`
+  - the button calls a working `/api/discovery/run`
+  - users can complete the discovery flow without manually seeding sample opportunities
+
+### 3. Stabilize `/api/discovery/run` around one active DB path
+
+- Why it matters:
+  - the route currently returns `410`, which blocks the intended product loop
+  - continuing with mixed table models will slow every subsequent change
+- Likely files:
+  - `src/app/api/discovery/run/route.ts`
+  - `src/lib/pg.ts`
+  - `src/lib/mock-discovery.ts`
+  - `prisma/schema.prisma`
+  - `sql/001_init.sql`
+- Done looks like:
+  - the route performs a real request cycle instead of returning `410`
+  - the chosen runtime tables are explicit
+  - the route reads an org, runs discovery, persists normalized opportunities, and returns a coherent result
+
+### 4. Consolidate shared DB and normalization helpers
+
+- Why it matters:
+  - there are duplicate `pg` helpers and a widening gap between route behavior and shared libraries
+- Likely files:
+  - `src/lib/pg.ts`
+  - `src/lib/postgres.ts`
+  - `src/lib/ensure-array.ts`
+  - any routes still doing local normalization
+- Done looks like:
+  - one canonical `pg` helper
+  - one canonical array normalization helper
+  - routes and shared libs import the same helper surface
+
+### 5. Decide how persisted matches fit the runtime and then implement end-to-end
+
+- Why it matters:
+  - the current app computes matches on demand, while the broader SQL model expects persisted `opportunity_matches`
+- Likely files:
+  - `src/app/api/match/route.ts`
+  - `src/lib/scoring.ts`
+  - `sql/001_init.sql`
+  - `src/types/db.ts`
+- Done looks like:
+  - either on-demand scoring remains the explicit MVP contract, or persisted matches become the active path
+  - docs, types, routes, and UI all agree on that choice
+
+### 6. Quarantine or remove stale Prisma-era and half-migrated code
+
+- Why it matters:
+  - contributors can currently mistake inactive code for the runtime architecture
+- Likely files:
+  - `src/lib/db.ts`
+  - `src/lib/postgres.ts`
+  - `src/lib/match.ts`
+  - `src/types/api.ts`
+  - any route returning `410`
+- Done looks like:
+  - stale pieces are either deleted or explicitly marked inactive
+  - active runtime paths are obvious from the repo layout
+
+### 7. Only then expand richer opportunity metadata and workflow features
+
+- Why it matters:
+  - richer metadata is useful, but it should not land before the discovery/save/score path is coherent
+- Likely files:
+  - `src/types/normalized.ts`
+  - `src/lib/mock-discovery.ts`
+  - future route/UI surfaces
+- Done looks like:
+  - extra metadata improves real ranking/review behavior without introducing another response-shape split
+
+## Product Direction
+
+Future direction, not current implementation:
+
+- Keep the MVP focused on grant discovery, normalization, scoring, and review for nonprofits.
+- If the grant workflow becomes stable, the broader opportunity model in `sql/001_init.sql` could later expand into RFPs, jobs, gigs, or other funding/opportunity types.
+
+## Guardrails for Contributors
+
+- Do not invent response shapes that are not returned by the active route files.
+- Keep README and AGENTS aligned with the code, not with older plans.
+- Prefer the agent-first discovery direction over manual fake seeding when moving the product forward.
+- Do not add another DB helper if an existing shared helper can be consolidated instead.
+- Do not treat stale Prisma- or SQL-model code as active runtime without verifying the route call path.
+- Do not assume the broader SQL discovery schema is already wired just because the tables and types exist.

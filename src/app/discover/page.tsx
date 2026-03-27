@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { fetchOrganizations } from "@/lib/api";
-import type { Opportunity } from "@/types/opportunity";
+import { fetchMatches, fetchOrganizations, runDiscovery } from "@/lib/api";
+import type { Match } from "@/lib/api";
 import type { Organization } from "@/types/organization";
 
 type CreateOrganizationForm = {
@@ -15,44 +15,9 @@ type CreateOrganizationForm = {
   taxStatus: string;
 };
 
-type MatchResult = {
-  opportunity: Opportunity;
-  score: number;
-};
-
 type ApiError = {
   error?: string;
 };
-
-const sampleOpportunities = [
-  {
-    title: "Appalachia Youth Arts Grant",
-    description: "Supports arts education programs for youth across Appalachia.",
-    agency: "Appalachia Arts Council",
-    geographies: "Appalachia",
-    focusAreas: "arts",
-    amount: 25000,
-    deadline: "2026-06-30T00:00:00.000Z",
-  },
-  {
-    title: "West Virginia Community Education Fund",
-    description: "Funds nonprofit education initiatives in West Virginia communities.",
-    agency: "WV Education Fund",
-    geographies: "West Virginia",
-    focusAreas: "education",
-    amount: 40000,
-    deadline: "2026-08-15T00:00:00.000Z",
-  },
-  {
-    title: "National Youth Development Opportunity",
-    description: "Provides support for youth development and mentoring programs.",
-    agency: "National Youth Partners",
-    geographies: "United States",
-    focusAreas: "youth",
-    amount: 30000,
-    deadline: "2026-09-01T00:00:00.000Z",
-  },
-] as const;
 
 function isOrganization(
   value: Organization | ApiError
@@ -60,25 +25,13 @@ function isOrganization(
   return "id" in value;
 }
 
-function formatCurrency(amount?: number) {
-  if (typeof amount !== "number") {
-    return "—";
-  }
-
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
-
 export default function DiscoverPage() {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [organizationId, setOrganizationId] = useState("");
-  const [matches, setMatches] = useState<MatchResult[]>([]);
+  const [matches, setMatches] = useState<Match[]>([]);
   const [orgLoading, setOrgLoading] = useState(true);
   const [matchLoading, setMatchLoading] = useState(false);
-  const [seeding, setSeeding] = useState(false);
+  const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [createOrgForm, setCreateOrgForm] = useState<CreateOrganizationForm>({
     name: "",
@@ -121,33 +74,21 @@ export default function DiscoverPage() {
       return;
     }
 
-    async function loadMatches() {
-      try {
-        setMatchLoading(true);
-        const res = await fetch(
-          `/api/match?orgId=${encodeURIComponent(organizationId)}`
-        );
-        const data = (await res.json()) as MatchResult[] | ApiError;
-
-        if (!res.ok) {
-          throw new Error(
-            !Array.isArray(data) && typeof data.error === "string"
-              ? data.error
-              : "Failed to load matches"
-          );
-        }
-
-        setMatches(Array.isArray(data) ? data : []);
-      } catch (err) {
-        setMatches([]);
-        setMessage(err instanceof Error ? err.message : "Failed to load matches");
-      } finally {
-        setMatchLoading(false);
-      }
-    }
-
-    loadMatches();
+    loadMatchesForOrganization(organizationId);
   }, [organizationId]);
+
+  async function loadMatchesForOrganization(orgId: string) {
+    try {
+      setMatchLoading(true);
+      const data = await fetchMatches(orgId);
+      setMatches(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setMatches([]);
+      setMessage(err instanceof Error ? err.message : "Failed to load matches");
+    } finally {
+      setMatchLoading(false);
+    }
+  }
 
   async function reloadOrganizations(newOrgId?: string) {
     const data = await fetchOrganizations();
@@ -215,42 +156,33 @@ export default function DiscoverPage() {
     }
   }
 
-  async function handleSeedOpportunities() {
+  async function handleRunDiscovery() {
+    if (!organizationId) {
+      setMessage("Select an organization before running discovery.");
+      return;
+    }
+
     try {
-      setSeeding(true);
+      setDiscoveryLoading(true);
       setMessage("");
 
-      for (const opportunity of sampleOpportunities) {
-        const res = await fetch("/api/opportunities", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(opportunity),
-        });
+      const result = await runDiscovery(organizationId);
+      await loadMatchesForOrganization(organizationId);
 
-        if (!res.ok) {
-          const data = (await res.json()) as ApiError;
-          throw new Error(data.error || "Failed to seed opportunities");
-        }
-      }
+      const modeLabel =
+        result.mode === "live"
+          ? "live TinyFish discovery"
+          : "mock fallback discovery";
 
-      setMessage("Added 3 sample opportunities.");
-
-      if (organizationId) {
-        const res = await fetch(
-          `/api/match?orgId=${encodeURIComponent(organizationId)}`
-        );
-        const data = (await res.json()) as MatchResult[] | ApiError;
-
-        if (res.ok && Array.isArray(data)) {
-          setMatches(data);
-        }
-      }
+      setMessage(
+        `Completed ${modeLabel}. Discovered ${result.discoveredCount} opportunities and saved ${result.savedCount}.`
+      );
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Failed to seed data");
+      setMessage(
+        err instanceof Error ? err.message : "Failed to run discovery"
+      );
     } finally {
-      setSeeding(false);
+      setDiscoveryLoading(false);
     }
   }
 
@@ -260,8 +192,12 @@ export default function DiscoverPage() {
         <div className="space-y-3">
           <h1 className="text-3xl font-bold">GrantHunter Discover</h1>
           <p className="text-sm text-gray-600">
-            Select an organization, seed sample opportunities, and review ranked
-            grant matches.
+            Select an organization, run discovery, and review ranked grant
+            matches.
+          </p>
+          <p className="text-sm text-gray-500">
+            Discovery uses live TinyFish when configured. Otherwise the backend
+            falls back to clearly labeled mock discovery results.
           </p>
         </div>
 
@@ -309,13 +245,13 @@ export default function DiscoverPage() {
                 <div>
                   <span className="font-medium">Focus Areas:</span>{" "}
                   {(selectedOrganization.focusAreas?.length ?? 0) > 0
-                    ? selectedOrganization.focusAreas
+                    ? selectedOrganization.focusAreas.join(", ")
                     : "—"}
                 </div>
                 <div>
                   <span className="font-medium">Geographies:</span>{" "}
                   {(selectedOrganization.geographies?.length ?? 0) > 0
-                    ? selectedOrganization.geographies
+                    ? selectedOrganization.geographies.join(", ")
                     : "—"}
                 </div>
                 <div>
@@ -328,11 +264,11 @@ export default function DiscoverPage() {
             <div className="flex gap-3">
               <button
                 type="button"
-                onClick={handleSeedOpportunities}
-                disabled={seeding}
+                onClick={handleRunDiscovery}
+                disabled={discoveryLoading || !organizationId}
                 className="rounded-lg bg-black px-4 py-2 text-sm text-white disabled:opacity-50"
               >
-                {seeding ? "Seeding..." : "Seed 3 Opportunities"}
+                {discoveryLoading ? "Running Discovery..." : "Run Discovery"}
               </button>
             </div>
 
@@ -454,8 +390,8 @@ export default function DiscoverPage() {
             <div className="p-4 text-sm text-gray-600">Loading matches...</div>
           ) : matches.length === 0 ? (
             <div className="p-4 text-sm text-gray-600">
-              No opportunities available yet. Seed sample opportunities to see
-              ranked results.
+              No opportunities available yet. Run discovery to save
+              opportunities and see ranked results.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -463,35 +399,20 @@ export default function DiscoverPage() {
                 <thead className="bg-gray-50 text-left">
                   <tr>
                     <th className="px-4 py-3">Title</th>
-                    <th className="px-4 py-3">Agency</th>
-                    <th className="px-4 py-3">Focus</th>
-                    <th className="px-4 py-3">Geography</th>
-                    <th className="px-4 py-3">Amount</th>
-                    <th className="px-4 py-3">Deadline</th>
                     <th className="px-4 py-3">Score</th>
+                    <th className="px-4 py-3">Reasons</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {matches.map(({ opportunity, score }) => (
-                    <tr key={opportunity.id} className="align-top border-t">
+                  {matches.map((match) => (
+                    <tr key={match.opportunityId} className="align-top border-t">
                       <td className="px-4 py-3">
-                        <div className="font-medium">{opportunity.title}</div>
-                        <div className="mt-1 text-xs text-gray-600">
-                          {opportunity.description}
-                        </div>
+                        <div className="font-medium">{match.title}</div>
                       </td>
-                      <td className="px-4 py-3">{opportunity.agency}</td>
-                      <td className="px-4 py-3">{opportunity.focusAreas}</td>
-                      <td className="px-4 py-3">{opportunity.geographies}</td>
+                      <td className="px-4 py-3 font-semibold">{match.score}</td>
                       <td className="px-4 py-3">
-                        {formatCurrency(opportunity.amount)}
+                        {match.reasons?.join(", ") || "—"}
                       </td>
-                      <td className="px-4 py-3">
-                        {opportunity.deadline
-                          ? new Date(opportunity.deadline).toLocaleDateString()
-                          : "—"}
-                      </td>
-                      <td className="px-4 py-3 font-semibold">{score}</td>
                     </tr>
                   ))}
                 </tbody>

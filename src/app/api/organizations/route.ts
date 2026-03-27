@@ -1,4 +1,5 @@
-import { Pool } from "pg";
+import { ensureArray } from "@/lib/ensure-array";
+import { getPool } from "@/lib/pg";
 
 export const runtime = "nodejs";
 
@@ -11,48 +12,6 @@ type OrganizationResponse = {
   focusAreas: string[];
   taxStatus: string;
 };
-
-const globalForPg = globalThis as unknown as {
-  pool?: Pool;
-};
-
-function getPool(): Pool {
-  if (!globalForPg.pool) {
-    const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) {
-      throw new Error("DATABASE_URL is not set");
-    }
-
-    globalForPg.pool = new Pool({ connectionString });
-  }
-
-  return globalForPg.pool;
-}
-
-function ensureArray(value: unknown): string[] {
-  if (!value) return [];
-
-  if (Array.isArray(value)) {
-    return value.map((v) => String(v).trim()).filter(Boolean);
-  }
-
-  if (typeof value === "string") {
-    if (value.startsWith("{") && value.endsWith("}")) {
-      return value
-        .slice(1, -1)
-        .split(",")
-        .map((v) => v.replace(/^"(.*)"$/, "$1").replace(/\\"/g, '"').trim())
-        .filter(Boolean);
-    }
-
-    return value
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean);
-  }
-
-  return [String(value).trim()].filter(Boolean);
-}
 
 function serializeRow(row: Record<string, unknown>): OrganizationResponse {
   return {

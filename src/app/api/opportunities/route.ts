@@ -1,9 +1,7 @@
+import { ensureArray } from "@/lib/ensure-array";
+import { getPool } from "@/lib/pg";
+
 export const runtime = "nodejs";
-
-import type { Opportunity as PrismaOpportunity } from "@prisma/client";
-
-import { getPrisma } from "@/lib/db";
-import { ensureArray, safeArray } from "@/lib/ensure-array";
 
 type OpportunityResponse = {
   id: string;
@@ -17,31 +15,53 @@ type OpportunityResponse = {
   createdAt: string;
 };
 
-function serializeOpportunity(record: PrismaOpportunity): OpportunityResponse {
+function serializeRow(row: Record<string, unknown>): OpportunityResponse {
   return {
-    id: record.id,
-    title: record.title,
-    description: record.description,
-    agency: record.agency,
-    geographies: ensureArray(record.geographies),
-    focusAreas: ensureArray(record.focusAreas),
-    amount: record.amount ?? undefined,
-    deadline: record.deadline?.toISOString(),
-    createdAt: record.createdAt.toISOString(),
+    id: String(row.id ?? ""),
+    title: String(row.title ?? ""),
+    description: String(row.description ?? ""),
+    agency: String(row.agency ?? ""),
+    geographies: ensureArray(row.geographies),
+    focusAreas: ensureArray(row.focusAreas),
+    amount:
+      typeof row.amount === "number"
+        ? row.amount
+        : row.amount != null
+        ? Number(row.amount)
+        : undefined,
+    deadline:
+      row.deadline instanceof Date
+        ? row.deadline.toISOString()
+        : row.deadline
+        ? String(row.deadline)
+        : undefined,
+    createdAt:
+      row.createdAt instanceof Date
+        ? row.createdAt.toISOString()
+        : String(row.createdAt ?? ""),
   };
 }
 
 export async function GET() {
   try {
-    const prisma = getPrisma();
-    const records: PrismaOpportunity[] = await prisma.opportunity.findMany({
-      orderBy: { createdAt: "desc" },
-    });
-    const opportunities: OpportunityResponse[] = safeArray<PrismaOpportunity>(records).map(
-      serializeOpportunity
-    );
+    const pool = getPool();
 
-    return Response.json(opportunities);
+    const result = await pool.query(`
+      SELECT
+        id,
+        title,
+        description,
+        agency,
+        geographies,
+        "focusAreas",
+        amount,
+        deadline,
+        "createdAt"
+      FROM "Opportunity"
+      ORDER BY "createdAt" DESC
+    `);
+
+    return Response.json(result.rows.map(serializeRow));
   } catch (err) {
     console.error("GET OPPORTUNITIES ERROR:", err);
     return Response.json({ error: String(err) }, { status: 500 });
@@ -50,33 +70,63 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const prisma = getPrisma();
-    const body = (await req.json()) as {
-      title?: string;
-      description?: string;
-      agency?: string;
-      geographies?: string | string[];
-      focusAreas?: string | string[];
-      amount?: number;
-      deadline?: string;
-    };
+    const pool = getPool();
 
-    const record: PrismaOpportunity = await prisma.opportunity.create({
-      data: {
-        title: String(body.title ?? "").trim(),
-        description: String(body.description ?? "").trim(),
-        agency: String(body.agency ?? "").trim(),
-        geographies: ensureArray(body.geographies),
-        focusAreas: ensureArray(body.focusAreas),
-        amount:
-          typeof body.amount === "number" && Number.isFinite(body.amount)
-            ? body.amount
-            : null,
-        deadline: body.deadline ? new Date(body.deadline) : null,
-      },
-    });
+    let body: any = {};
+    try {
+      body = await req.json();
+    } catch {
+      return Response.json({ error: "Invalid or missing JSON body" }, { status: 400 });
+    }
 
-    return Response.json(serializeOpportunity(record));
+    const title = String(body?.title ?? "").trim();
+    const description = String(body?.description ?? "").trim();
+    const agency = String(body?.agency ?? "").trim();
+    const geographies = ensureArray(body?.geographies);
+    const focusAreas = ensureArray(body?.focusAreas);
+    const amount =
+      typeof body?.amount === "number" && Number.isFinite(body.amount)
+        ? body.amount
+        : null;
+    const deadline = body?.deadline ? new Date(body.deadline) : null;
+
+    const result = await pool.query(
+      `
+      INSERT INTO "Opportunity" (
+        id,
+        title,
+        description,
+        agency,
+        geographies,
+        "focusAreas",
+        amount,
+        deadline
+      )
+      VALUES (
+        gen_random_uuid()::text,
+        $1,
+        $2,
+        $3,
+        $4::text[],
+        $5::text[],
+        $6,
+        $7
+      )
+      RETURNING
+        id,
+        title,
+        description,
+        agency,
+        geographies,
+        "focusAreas",
+        amount,
+        deadline,
+        "createdAt"
+      `,
+      [title, description, agency, geographies, focusAreas, amount, deadline]
+    );
+
+    return Response.json(serializeRow(result.rows[0]));
   } catch (err) {
     console.error("CREATE OPPORTUNITY ERROR:", err);
     return Response.json({ error: String(err) }, { status: 500 });

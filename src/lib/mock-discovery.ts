@@ -420,6 +420,29 @@ function dedupeByKey<T extends { dedupeKey: string }>(items: T[]) {
   return Array.from(map.values());
 }
 
+function getLiveDiscoveryConfig() {
+  const rawFlag = String(process.env.GRANTFISH_USE_LIVE_TINYFISH ?? "").trim();
+  const normalizedFlag = rawFlag.toLowerCase();
+  const useLive =
+    normalizedFlag === "true" ||
+    normalizedFlag === "1" ||
+    normalizedFlag === "yes" ||
+    normalizedFlag === "on";
+  const apiKey = String(process.env.TINYFISH_API_KEY ?? "").trim();
+  const hasKey = apiKey.length > 0;
+  const baseUrl = String(
+    process.env.TINYFISH_BASE_URL || "https://agent.tinyfish.ai"
+  ).trim();
+
+  return {
+    rawFlag,
+    useLive,
+    hasKey,
+    hasBaseUrl: baseUrl.length > 0,
+    baseUrl,
+  };
+}
+
 function getMockFallback(): NormalizedOpportunity[] {
   return [
     {
@@ -476,12 +499,29 @@ function getMockFallback(): NormalizedOpportunity[] {
 export async function runMockGrantDiscovery(
   org: OrgLike = {}
 ): Promise<NormalizedOpportunity[]> {
-  const useLive = process.env.GRANTFISH_USE_LIVE_TINYFISH === "true";
-  const hasKey = Boolean(process.env.TINYFISH_API_KEY);
+  const config = getLiveDiscoveryConfig();
 
-  if (!useLive || !hasKey) {
+  console.info(
+    `[discovery] config liveFlag=${config.rawFlag || "<unset>"} resolvedLive=${config.useLive} hasKey=${config.hasKey} hasBaseUrl=${config.hasBaseUrl}`
+  );
+
+  if (!config.useLive) {
+    console.warn(
+      `[discovery] using mock fallback because live discovery is disabled by GRANTFISH_USE_LIVE_TINYFISH=${config.rawFlag || "<unset>"}`
+    );
     return getMockFallback();
   }
+
+  if (!config.hasKey) {
+    console.warn(
+      "[discovery] using mock fallback because TINYFISH_API_KEY is missing"
+    );
+    return getMockFallback();
+  }
+
+  console.info(
+    `[discovery] attempting live TinyFish discovery via ${config.baseUrl}`
+  );
 
   const settled = await Promise.allSettled(
     safeArray<LiveSource>(LIVE_SOURCES).map((source) => runTinyFishSource(source, org))
@@ -492,12 +532,21 @@ export async function runMockGrantDiscovery(
   );
 
   if (liveResults.length > 0) {
+    console.info(
+      `[discovery] live TinyFish discovery succeeded with ${liveResults.length} normalized opportunities before dedupe`
+    );
     return dedupeByKey(liveResults);
   }
 
   const errors = safeArray<PromiseSettledResult<NormalizedOpportunity[]>>(settled)
     .filter((r): r is PromiseRejectedResult => r.status === "rejected")
     .map((r) => r.reason instanceof Error ? r.reason.message : String(r.reason));
+
+  console.error(
+    `[discovery] live TinyFish discovery failed across all sources: ${
+      errors.length > 0 ? errors.join(" | ") : "No live opportunities returned"
+    }`
+  );
 
   throw new Error(
     errors.length > 0
