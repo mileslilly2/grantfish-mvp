@@ -1,3 +1,5 @@
+export const runtime = "nodejs";
+
 import { clearLogs, getLogs } from "@/lib/logStore";
 
 export async function GET() {

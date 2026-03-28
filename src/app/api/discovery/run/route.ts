@@ -1,53 +1,84 @@
-import { NextRequest, NextResponse } from "next/server";
-import { pool } from "@/lib/db";
+export const runtime = "nodejs";
+
+import { ensureArray } from "@/lib/ensure-array";
 import { addLog, clearLogs } from "@/lib/logStore";
 import { runMockGrantDiscovery } from "@/lib/mock-discovery";
+import { ensureActiveAppSchema, getPool } from "@/lib/pg";
 import { scoreOpportunity } from "@/lib/scoring";
 
-export async function POST(req: NextRequest) {
+type RequestBody = {
+  organizationId?: string;
+  orgId?: string;
+};
+
+type OrganizationRow = {
+  id: string;
+  name: string;
+  mission: string;
+  entityType: string;
+  geographies: unknown;
+  focusAreas: unknown;
+  taxStatus: string | null;
+};
+
+type OpportunityRow = {
+  id: string;
+};
+
+export async function POST(req: Request) {
   try {
     clearLogs();
     addLog("Starting discovery run");
 
-    const body = await req.json();
-    const { organizationProfileId } = body;
+    const body = (await req.json().catch(() => ({}))) as RequestBody;
+    const organizationId = String(body.organizationId ?? body.orgId ?? "").trim();
 
-    if (!organizationProfileId) {
-      return NextResponse.json(
-        { error: "organizationProfileId is required" },
-        { status: 400 }
-      );
+    if (!organizationId) {
+      return Response.json({ error: "Missing organizationId" }, { status: 400 });
     }
 
-    // Load organization profile
-    const orgResult = await pool.query(
-      `SELECT * FROM organization_profiles WHERE id = $1`,
-      [organizationProfileId]
+    const pool = getPool();
+    await ensureActiveAppSchema();
+    const orgResult = await pool.query<OrganizationRow>(
+      `
+      SELECT
+        id,
+        name,
+        mission,
+        entity_type AS "entityType",
+        geographies,
+        focus_areas AS "focusAreas",
+        tax_status AS "taxStatus"
+      FROM organization_profiles
+      WHERE id = $1
+      `,
+      [organizationId]
     );
 
     if (orgResult.rows.length === 0) {
-      return NextResponse.json(
-        { error: "Organization profile not found" },
-        { status: 404 }
-      );
+      return Response.json({ error: "Organization not found" }, { status: 404 });
     }
 
-    const org = orgResult.rows[0];
-    addLog("Loaded organization profile");
+    const organization = orgResult.rows[0];
+    addLog("Loaded organization");
+    console.info(
+      `[discovery-route] starting discovery for organizationId=${organizationId}`
+    );
 
-    // Run discovery (mock for now)
-    addLog("Running grant discovery");
-    const discovered = await runMockGrantDiscovery(org);
+    addLog("Running discovery");
+    const discovered = await runMockGrantDiscovery({
+      mission: organization.mission,
+      focusAreas: ensureArray(organization.focusAreas),
+      geographies: ensureArray(organization.geographies),
+    });
     addLog(`Discovered ${discovered.length} opportunities`);
-    addLog("Scoring matches");
     addLog("Saving opportunities");
 
-    let inserted = 0;
-    let updated = 0;
+    let savedCount = 0;
+    const savedOpportunityIds: string[] = [];
 
-    for (const opp of discovered) {
-      // Upsert opportunity
-      const oppInsert = await pool.query(
+    for (const item of discovered) {
+      const upsertResult = await pool.query<OpportunityRow>(
         `
         INSERT INTO opportunities (
           type,
@@ -74,56 +105,106 @@ export async function POST(req: NextRequest) {
           dedupe_key
         )
         VALUES (
-          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11,
+          $12,
+          $13,
+          $14,
+          $15,
+          $16,
+          $17,
+          $18,
+          $19,
+          $20::jsonb,
+          $21::jsonb,
+          $22
         )
         ON CONFLICT (dedupe_key)
         DO UPDATE SET
+          source_name = EXCLUDED.source_name,
+          source_type = EXCLUDED.source_type,
+          source_url = EXCLUDED.source_url,
+          canonical_url = EXCLUDED.canonical_url,
+          title = EXCLUDED.title,
+          summary = EXCLUDED.summary,
           status = EXCLUDED.status,
           deadline_at = EXCLUDED.deadline_at,
           location_scope = EXCLUDED.location_scope,
           country = EXCLUDED.country,
           region = EXCLUDED.region,
+          funder_name = EXCLUDED.funder_name,
+          amount_min = EXCLUDED.amount_min,
+          amount_max = EXCLUDED.amount_max,
+          currency = EXCLUDED.currency,
           eligibility_text = EXCLUDED.eligibility_text,
           requirements_text = EXCLUDED.requirements_text,
+          application_url = EXCLUDED.application_url,
           extracted_fields = EXCLUDED.extracted_fields,
           metadata = EXCLUDED.metadata,
           last_seen_at = now(),
           updated_at = now()
-        RETURNING *
+        RETURNING id
         `,
         [
-          opp.type,
-          opp.sourceName,
-          opp.sourceType,
-          opp.sourceUrl,
-          opp.canonicalUrl,
-          opp.title,
-          opp.summary,
-          opp.status || "open",
-          opp.deadlineAt,
-          opp.locationScope,
-          opp.country || null,
-          opp.region || null,
-          opp.funderName,
-          opp.amountMin,
-          opp.amountMax,
-          opp.currency || "USD",
-          opp.eligibilityText,
-          opp.requirementsText,
-          opp.applicationUrl,
-          JSON.stringify(opp.extractedFields || {}),
-          JSON.stringify(opp.metadata || {}),
-          opp.dedupeKey
+          item.type,
+          item.sourceName,
+          item.sourceType,
+          item.sourceUrl,
+          item.canonicalUrl,
+          item.title.trim(),
+          item.summary ?? null,
+          item.status ?? "unknown",
+          item.deadlineAt ? new Date(item.deadlineAt) : null,
+          item.locationScope ?? null,
+          item.country ?? null,
+          item.region ?? null,
+          item.funderName ?? null,
+          item.amountMin ?? null,
+          item.amountMax ?? null,
+          item.currency ?? "USD",
+          item.eligibilityText ?? null,
+          item.requirementsText ?? null,
+          item.applicationUrl ?? null,
+          JSON.stringify(item.extractedFields ?? {}),
+          JSON.stringify(item.metadata ?? {}),
+          item.dedupeKey,
         ]
       );
 
-      const opportunity = oppInsert.rows[0];
+      const score = scoreOpportunity(
+        {
+          title: item.title,
+          summary: item.summary ?? null,
+          eligibility_text: item.eligibilityText ?? null,
+          requirements_text: item.requirementsText ?? null,
+          source_name: item.sourceName,
+          funder_name: item.funderName ?? null,
+          location_scope: item.locationScope ?? null,
+          country: item.country ?? null,
+          region: item.region ?? null,
+          status: item.status ?? null,
+          deadline_at: item.deadlineAt ?? null,
+          extracted_fields: item.extractedFields ?? null,
+        },
+        {
+          mission: organization.mission,
+          focus_areas: ensureArray(organization.focusAreas),
+          geographies: ensureArray(organization.geographies),
+          entity_type: organization.entityType,
+          tax_status: organization.taxStatus,
+        }
+      );
 
-      // Score opportunity
-      const score = scoreOpportunity(opportunity, org);
-
-      // Upsert match
-      const matchResult = await pool.query(
+      await pool.query(
         `
         INSERT INTO opportunity_matches (
           organization_profile_id,
@@ -132,44 +213,53 @@ export async function POST(req: NextRequest) {
           fit_reasons,
           confidence_score
         )
-        VALUES ($1,$2,$3,$4,$5)
+        VALUES ($1, $2, $3, $4::jsonb, $5)
         ON CONFLICT (organization_profile_id, opportunity_id)
         DO UPDATE SET
           fit_score = EXCLUDED.fit_score,
           fit_reasons = EXCLUDED.fit_reasons,
           confidence_score = EXCLUDED.confidence_score,
           updated_at = now()
-        RETURNING *
         `,
         [
-          organizationProfileId,
-          opportunity.id,
+          organizationId,
+          upsertResult.rows[0].id,
           score.fitScore,
           JSON.stringify(score.fitReasons),
-          score.confidenceScore
+          score.confidenceScore,
         ]
       );
 
-      if (matchResult.rowCount === 1) {
-        inserted++;
-      } else {
-        updated++;
-      }
+      savedOpportunityIds.push(upsertResult.rows[0].id);
+      savedCount += 1;
     }
 
-    addLog("Discovery complete");
+    const usedLive = discovered.some(
+      (item) => item.metadata?.live_source === true
+    );
 
-    return NextResponse.json({
-      success: true,
-      discovered: discovered.length,
-      matchesInserted: inserted,
-      matchesUpdated: updated
+    console.info(
+      `[discovery-route] completed discovery mode=${
+        usedLive ? "live" : "mock"
+      } discovered=${discovered.length} saved=${savedCount}`
+    );
+    addLog(
+      `Completed ${usedLive ? "live TinyFish" : "mock fallback"} discovery`
+    );
+    addLog(`Saved ${savedCount} opportunities`);
+
+    return Response.json({
+      organizationId,
+      mode: usedLive ? "live" : "mock",
+      discoveredCount: discovered.length,
+      savedCount,
+      opportunityIds: savedOpportunityIds,
     });
   } catch (err) {
-    console.error("Discovery run error:", err);
-
-    return NextResponse.json(
-      { error: "Discovery run failed" },
+    console.error("DISCOVERY RUN ERROR:", err);
+    addLog("Discovery failed");
+    return Response.json(
+      { error: err instanceof Error ? err.message : String(err) },
       { status: 500 }
     );
   }

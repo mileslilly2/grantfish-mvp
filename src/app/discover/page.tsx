@@ -2,45 +2,30 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-const STAGE_OPTIONS = ["new", "review", "shortlist", "archived"] as const;
-
-type PipelineStage = (typeof STAGE_OPTIONS)[number];
-
-type OpportunityRow = {
-  id: string;
-  title: string;
-  funder_name: string | null;
-  deadline_at: string | null;
-  amount_min: string | null;
-  amount_max: string | null;
-  currency: string;
-  status: string;
-  application_url: string | null;
-  source_name: string;
-  fit_score: number;
-  fit_reasons: string[];
-  pipeline_stage: string;
-  starred: boolean;
-  notes: string | null;
-};
-
-type Organization = {
-  id: string;
-  name: string;
-  entity_type: string;
-  mission: string;
-  geographies: string[];
-  focus_areas: string[];
-  tax_status: string | null;
-};
+import {
+  MATCH_STAGE_OPTIONS,
+  fetchDiscoveryLogs,
+  fetchMatches,
+  fetchOrganizations,
+  runDiscovery,
+  updateMatchStage,
+} from "@/lib/api";
+import type { DiscoveryLogEntry } from "@/lib/api";
+import type { Match } from "@/lib/api";
+import type { MatchStage } from "@/lib/api";
+import type { Organization } from "@/types/organization";
 
 type CreateOrganizationForm = {
   name: string;
-  entity_type: string;
+  entityType: string;
   mission: string;
   geographies: string;
-  focus_areas: string;
-  tax_status: string;
+  focusAreas: string;
+  taxStatus: string;
+};
+
+type ApiError = {
+  error?: string;
 };
 
 const CSV_COLUMNS = [
@@ -64,54 +49,75 @@ function formatCsvValue(value: string | number | null | undefined) {
   return `"${normalized.replace(/"/g, '""')}"`;
 }
 
+function formatCurrencyRange(match: Match) {
+  if (typeof match.amountMin === "number" && typeof match.amountMax === "number") {
+    return `${match.currency || "USD"} ${match.amountMin}\u2013${match.amountMax}`;
+  }
+
+  if (typeof match.amountMax === "number") {
+    return `${match.currency || "USD"} ${match.amountMax}`;
+  }
+
+  if (typeof match.amountMin === "number") {
+    return `${match.currency || "USD"} ${match.amountMin}+`;
+  }
+
+  return "\u2014";
+}
+
+function formatStageValue(value: string | null | undefined): MatchStage | "" {
+  return MATCH_STAGE_OPTIONS.includes(value as MatchStage)
+    ? (value as MatchStage)
+    : "";
+}
+
+function isOrganization(
+  value: Organization | ApiError
+): value is Organization {
+  return "id" in value;
+}
+
 export default function DiscoverPage() {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
-  const [organizationProfileId, setOrganizationProfileId] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [updatingStageId, setUpdatingStageId] = useState<string | null>(null);
+  const [organizationId, setOrganizationId] = useState("");
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [hasLoadedMatches, setHasLoadedMatches] = useState(false);
   const [orgLoading, setOrgLoading] = useState(true);
+  const [matchLoading, setMatchLoading] = useState(false);
+  const [discoveryLoading, setDiscoveryLoading] = useState(false);
+  const [updatingStageId, setUpdatingStageId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
-  const [lastScanCompletedAt, setLastScanCompletedAt] = useState<string | null>(
+  const [logs, setLogs] = useState<DiscoveryLogEntry[]>([]);
+  const [lastDiscoveryCompletedAt, setLastDiscoveryCompletedAt] = useState<string | null>(
     null
   );
-  const [opportunities, setOpportunities] = useState<OpportunityRow[]>([]);
-  const [logs, setLogs] = useState<string[]>([]);
   const [createOrgForm, setCreateOrgForm] = useState<CreateOrganizationForm>({
     name: "",
-    entity_type: "nonprofit",
+    entityType: "nonprofit",
     mission: "",
     geographies: "",
-    focus_areas: "",
-    tax_status: "",
+    focusAreas: "",
+    taxStatus: "",
   });
 
   const selectedOrganization = useMemo(() => {
-    return (
-      organizations.find((org) => org.id === organizationProfileId) ?? null
-    );
-  }, [organizations, organizationProfileId]);
+    return organizations.find((org) => org.id === organizationId) ?? null;
+  }, [organizationId, organizations]);
 
   useEffect(() => {
     async function loadOrganizations() {
       try {
         setOrgLoading(true);
-
-        const res = await fetch("/api/organizations");
-
-        if (!res.ok) {
-          throw new Error("Failed to load organizations");
-        }
-
-        const data: Organization[] = await res.json();
+        const data = await fetchOrganizations();
         setOrganizations(data);
 
         if (data.length > 0) {
-          setOrganizationProfileId((current) => current || data[0].id);
+          setOrganizationId((current) => current || data[0].id);
         }
       } catch (err) {
-        const errorMessage =
-          err instanceof Error ? err.message : "Failed to load organizations";
-        setMessage(errorMessage);
+        setMessage(
+          err instanceof Error ? err.message : "Failed to load organizations"
+        );
       } finally {
         setOrgLoading(false);
       }
@@ -121,143 +127,58 @@ export default function DiscoverPage() {
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch("/api/logs", { cache: "no-store" });
-
-        if (!res.ok) {
-          return;
-        }
-
-        const data = await res.json();
-
-        if (Array.isArray(data)) {
-          const normalizedLogs = data.map((entry) => {
-            if (typeof entry === "string") {
-              return entry;
-            }
-
-            if (
-              entry &&
-              typeof entry === "object" &&
-              "message" in entry &&
-              typeof entry.message === "string"
-            ) {
-              return entry.message;
-            }
-
-            if (
-              entry &&
-              typeof entry === "object" &&
-              "step" in entry &&
-              typeof entry.step === "string"
-            ) {
-              return entry.step;
-            }
-
-            return JSON.stringify(entry);
-          });
-
-          setLogs(normalizedLogs);
-        }
-      } catch {
-        // ignore polling errors
-      }
-    }, 500);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  async function loadOrganizationsAndSelect(newOrgId?: string) {
-    const res = await fetch("/api/organizations");
-
-    if (!res.ok) {
-      throw new Error("Failed to load organizations");
-    }
-
-    const data: Organization[] = await res.json();
-    setOrganizations(data);
-
-    if (newOrgId) {
-      setOrganizationProfileId(newOrgId);
+    if (!discoveryLoading) {
       return;
     }
 
-    if (!organizationProfileId && data.length > 0) {
-      setOrganizationProfileId(data[0].id);
+    let cancelled = false;
+
+    async function loadLogs() {
+      try {
+        const data = await fetchDiscoveryLogs();
+        if (!cancelled) {
+          setLogs(Array.isArray(data) ? data : []);
+        }
+      } catch {
+        // Ignore polling failures while discovery is running.
+      }
     }
-  }
 
-  async function loadOpportunities(orgId: string) {
-    const res = await fetch(
-      `/api/opportunities?organizationProfileId=${encodeURIComponent(orgId)}`
-    );
+    loadLogs();
+    const interval = window.setInterval(loadLogs, 800);
 
-    if (!res.ok) {
-      throw new Error("Failed to load opportunities");
-    }
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [discoveryLoading]);
 
-    const data = await res.json();
-    setOpportunities(data);
-  }
-
-  async function handleScan() {
+  async function loadMatchesForOrganization(orgId: string) {
     try {
-      if (!organizationProfileId) {
-        throw new Error("Please select an organization");
-      }
-
-      setLoading(true);
-      setMessage("");
-      setLogs([]);
-
-      const res = await fetch("/api/discovery/run", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          organizationProfileId,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Scan failed");
-      }
-
-      setMessage(
-        `Scan complete. Discovered ${data.discovered} opportunity(s).`
-      );
-      setLastScanCompletedAt(new Date().toISOString());
-
-      await loadOpportunities(organizationProfileId);
+      setMatchLoading(true);
+      const data = await fetchMatches(orgId);
+      setMatches(Array.isArray(data) ? data : []);
+      setHasLoadedMatches(true);
     } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : "Something went wrong";
-      setMessage(errorMessage);
+      setMatches([]);
+      setHasLoadedMatches(false);
+      setMessage(err instanceof Error ? err.message : "Failed to load matches");
     } finally {
-      setLoading(false);
+      setMatchLoading(false);
     }
   }
 
-  async function handleLoadExisting() {
-    try {
-      if (!organizationProfileId) {
-        throw new Error("Please select an organization");
-      }
+  async function reloadOrganizations(newOrgId?: string) {
+    const data = await fetchOrganizations();
+    setOrganizations(data);
 
-      setLoading(true);
-      setMessage("");
-      await loadOpportunities(organizationProfileId);
-      setMessage("Loaded saved opportunities.");
-    } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : "Failed to load opportunities";
-      setMessage(errorMessage);
-    } finally {
-      setLoading(false);
+    if (newOrgId) {
+      setOrganizationId(newOrgId);
+      return;
+    }
+
+    if (!organizationId && data.length > 0) {
+      setOrganizationId(data[0].id);
     }
   }
 
@@ -265,134 +186,166 @@ export default function DiscoverPage() {
     e.preventDefault();
 
     try {
-      setLoading(true);
       setMessage("");
-
-      const payload = {
-        name: createOrgForm.name.trim(),
-        entity_type: createOrgForm.entity_type.trim() || "nonprofit",
-        mission: createOrgForm.mission.trim(),
-        geographies: createOrgForm.geographies
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-        focus_areas: createOrgForm.focus_areas
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-        tax_status: createOrgForm.tax_status.trim(),
-      };
 
       const res = await fetch("/api/organizations", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          name: createOrgForm.name.trim(),
+          entityType: createOrgForm.entityType.trim() || "nonprofit",
+          mission: createOrgForm.mission.trim(),
+          geographies: createOrgForm.geographies.trim(),
+          focusAreas: createOrgForm.focusAreas.trim(),
+          taxStatus: createOrgForm.taxStatus.trim(),
+        }),
       });
 
-      const data = await res.json();
+      const data = (await res.json()) as Organization | ApiError;
 
       if (!res.ok) {
-        throw new Error(data?.error || "Failed to create organization");
+        throw new Error(
+          !isOrganization(data) && typeof data.error === "string"
+            ? data.error
+            : "Failed to create organization"
+        );
       }
 
-      await loadOrganizationsAndSelect(data.id);
+      if (!isOrganization(data)) {
+        throw new Error("Failed to create organization");
+      }
 
+      await reloadOrganizations(data.id);
       setCreateOrgForm({
         name: "",
-        entity_type: "nonprofit",
+        entityType: "nonprofit",
         mission: "",
         geographies: "",
-        focus_areas: "",
-        tax_status: "",
+        focusAreas: "",
+        taxStatus: "",
       });
-
       setMessage(`Created organization: ${data.name}`);
     } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : "Failed to create organization";
-      setMessage(errorMessage);
+      setMessage(
+        err instanceof Error ? err.message : "Failed to create organization"
+      );
+    }
+  }
+
+  async function handleRunDiscovery() {
+    if (!organizationId) {
+      setMessage("Select an organization before running discovery.");
+      return;
+    }
+
+    try {
+      setDiscoveryLoading(true);
+      setMessage("");
+      setLogs([]);
+
+      const result = await runDiscovery(organizationId);
+      await loadMatchesForOrganization(organizationId);
+      const latestLogs = await fetchDiscoveryLogs().catch(() => []);
+      setLogs(Array.isArray(latestLogs) ? latestLogs : []);
+      setLastDiscoveryCompletedAt(new Date().toISOString());
+
+      const modeLabel =
+        result.mode === "live"
+          ? "live TinyFish discovery"
+          : "mock fallback discovery";
+
+      setMessage(
+        `Completed ${modeLabel}. Discovered ${result.discoveredCount} opportunities and saved ${result.savedCount}.`
+      );
+    } catch (err) {
+      setMessage(
+        err instanceof Error ? err.message : "Failed to run discovery"
+      );
     } finally {
-      setLoading(false);
+      setDiscoveryLoading(false);
+    }
+  }
+
+  async function handleLoadSavedOpportunities() {
+    if (!organizationId) {
+      setMessage("Select an organization before loading saved opportunities.");
+      return;
+    }
+
+    try {
+      setMessage("");
+      await loadMatchesForOrganization(organizationId);
+      setMessage("Loaded saved opportunities for the selected organization.");
+    } catch {
+      // `loadMatchesForOrganization` already sets the error state.
     }
   }
 
   async function handleStageChange(
     opportunityId: string,
-    pipelineStage: PipelineStage
+    pipelineStage: MatchStage
   ) {
-    const previousOpportunities = opportunities;
+    if (!organizationId) {
+      setMessage("Select an organization before updating opportunity stage.");
+      return;
+    }
+
+    const previousMatches = matches;
 
     try {
-      if (!organizationProfileId) {
-        throw new Error("Please select an organization");
-      }
-
       setUpdatingStageId(opportunityId);
       setMessage("");
-      setOpportunities((current) =>
-        current.map((opp) =>
-          opp.id === opportunityId ? { ...opp, pipeline_stage: pipelineStage } : opp
+      setMatches((current) =>
+        current.map((match) =>
+          match.opportunityId === opportunityId
+            ? { ...match, pipelineStage }
+            : match
         )
       );
 
-      const res = await fetch("/api/opportunity-matches/stage", {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          organizationProfileId,
-          opportunityId,
-          pipelineStage,
-        }),
+      const updated = await updateMatchStage({
+        orgId: organizationId,
+        opportunityId,
+        pipelineStage,
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to update stage");
-      }
-
-      setOpportunities((current) =>
-        current.map((opp) =>
-          opp.id === opportunityId
-            ? { ...opp, pipeline_stage: data.pipeline_stage }
-            : opp
+      setMatches((current) =>
+        current.map((match) =>
+          match.opportunityId === updated.opportunityId
+            ? { ...match, pipelineStage: updated.pipelineStage }
+            : match
         )
       );
+      setMessage(`Updated opportunity stage to ${updated.pipelineStage}.`);
     } catch (err) {
-      setOpportunities(previousOpportunities);
-      const errorMessage =
-        err instanceof Error ? err.message : "Failed to update stage";
-      setMessage(errorMessage);
+      setMatches(previousMatches);
+      setMessage(err instanceof Error ? err.message : "Failed to update stage");
     } finally {
       setUpdatingStageId(null);
     }
   }
 
   function handleExportCsv() {
-    if (opportunities.length === 0) {
+    if (matches.length === 0) {
       return;
     }
 
-    const rows = opportunities.map((opportunity) => ({
+    const rows = matches.map((match) => ({
       organization_name: selectedOrganization?.name ?? "",
-      title: opportunity.title ?? "",
-      funder_name: opportunity.funder_name ?? "",
-      deadline_at: opportunity.deadline_at ?? "",
-      amount_min: opportunity.amount_min ?? "",
-      amount_max: opportunity.amount_max ?? "",
-      currency: opportunity.currency ?? "",
-      source_name: opportunity.source_name ?? "",
-      application_url: opportunity.application_url ?? "",
-      fit_score: opportunity.fit_score ?? "",
-      fit_reasons: Array.isArray(opportunity.fit_reasons)
-        ? opportunity.fit_reasons.join("; ")
-        : "",
-      pipeline_stage: opportunity.pipeline_stage ?? "",
-      notes: opportunity.notes ?? "",
+      title: match.title ?? "",
+      funder_name: match.funderName ?? "",
+      deadline_at: match.deadlineAt ?? "",
+      amount_min: match.amountMin ?? "",
+      amount_max: match.amountMax ?? "",
+      currency: match.currency ?? "",
+      source_name: match.sourceName ?? "",
+      application_url: match.applicationUrl ?? "",
+      fit_score: match.score ?? "",
+      fit_reasons: Array.isArray(match.reasons) ? match.reasons.join("; ") : "",
+      pipeline_stage: match.pipelineStage ?? "",
+      notes: match.notes ?? "",
     }));
 
     const csvContent = [
@@ -410,7 +363,7 @@ export default function DiscoverPage() {
     const date = new Date().toISOString().slice(0, 10);
 
     link.href = url;
-    link.download = `granthunter-opportunities-${date}.csv`;
+    link.download = `granthunter-matches-${date}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -418,24 +371,33 @@ export default function DiscoverPage() {
   }
 
   return (
-    <main className="min-h-screen bg-white text-black p-8">
-      <div className="max-w-6xl mx-auto space-y-8">
+    <main className="min-h-screen bg-white p-8 text-black">
+      <div className="mx-auto max-w-6xl space-y-8">
         <div className="space-y-3">
           <h1 className="text-3xl font-bold">GrantHunter Discover</h1>
           <p className="text-sm text-gray-600">
-            Scan grant sources, review ranked matches, and export opportunities
-            for your organization.
+            Select an organization, run discovery, and review ranked grant
+            matches.
+          </p>
+          <p className="text-sm text-gray-500">
+            Discovery uses live TinyFish when configured. Otherwise the backend
+            falls back to clearly labeled mock discovery results.
           </p>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
-          <div className="border rounded-xl p-4 space-y-4">
+        <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+          <section className="space-y-4 rounded-xl border p-4">
             <label className="block space-y-2">
               <span className="text-sm font-medium">Select Organization</span>
               <select
-                className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
-                value={organizationProfileId}
-                onChange={(e) => setOrganizationProfileId(e.target.value)}
+                className="w-full rounded-lg border bg-white px-3 py-2 text-sm"
+                value={organizationId}
+                onChange={(e) => {
+                  setOrganizationId(e.target.value);
+                  setMatches([]);
+                  setHasLoadedMatches(false);
+                  setMessage("");
+                }}
                 disabled={orgLoading || organizations.length === 0}
               >
                 {orgLoading ? (
@@ -453,104 +415,115 @@ export default function DiscoverPage() {
             </label>
 
             {selectedOrganization ? (
-              <div className="border rounded-xl p-4 space-y-3">
+              <div className="space-y-3 rounded-xl border p-4">
                 <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                   Organization Summary
                 </div>
-
-                <div className="text-2xl font-bold">
-                  Searching for grants for: {selectedOrganization.name}
-                </div>
-
+                <div className="text-2xl font-bold">{selectedOrganization.name}</div>
                 <div>
                   <span className="font-medium">Entity Type:</span>{" "}
-                  <span className="text-gray-700">
-                    {selectedOrganization.entity_type || "—"}
-                  </span>
+                  {selectedOrganization.entityType || "—"}
                 </div>
-
                 <div>
                   <span className="font-medium">Mission:</span>{" "}
                   {selectedOrganization.mission || "—"}
                 </div>
-
                 <div>
                   <span className="font-medium">Focus Areas:</span>{" "}
-                  {selectedOrganization.focus_areas.length > 0
-                    ? selectedOrganization.focus_areas.join(", ")
+                  {(selectedOrganization.focusAreas?.length ?? 0) > 0
+                    ? selectedOrganization.focusAreas.join(", ")
                     : "—"}
                 </div>
-
                 <div>
                   <span className="font-medium">Geographies:</span>{" "}
-                  {selectedOrganization.geographies.length > 0
+                  {(selectedOrganization.geographies?.length ?? 0) > 0
                     ? selectedOrganization.geographies.join(", ")
                     : "—"}
                 </div>
-
                 <div>
                   <span className="font-medium">Tax Status:</span>{" "}
-                  {selectedOrganization.tax_status || "—"}
+                  {selectedOrganization.taxStatus || "—"}
                 </div>
               </div>
             ) : null}
 
             <div className="flex gap-3">
               <button
-                onClick={handleScan}
-                disabled={loading || !organizationProfileId}
-                className="rounded-lg bg-black text-white px-4 py-2 text-sm disabled:opacity-50"
+                type="button"
+                onClick={handleRunDiscovery}
+                disabled={discoveryLoading || !organizationId}
+                className="rounded-lg bg-black px-4 py-2 text-sm text-white disabled:opacity-50"
               >
-                {loading ? "Scanning..." : "Scan for Grants"}
+                {discoveryLoading ? "Running Discovery..." : "Run Discovery"}
               </button>
-
               <button
-                onClick={handleLoadExisting}
-                disabled={loading || !organizationProfileId}
+                type="button"
+                onClick={handleLoadSavedOpportunities}
+                disabled={matchLoading || discoveryLoading || !organizationId}
                 className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
               >
-                Load Saved Opportunities
+                {matchLoading ? "Loading Saved..." : "Load Saved Opportunities"}
               </button>
-
               <button
+                type="button"
                 onClick={handleExportCsv}
-                disabled={opportunities.length === 0}
+                disabled={!hasLoadedMatches || matches.length === 0}
                 className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
               >
                 Export CSV
               </button>
             </div>
 
-            <div className="rounded-lg bg-black text-green-400 p-3 text-xs font-mono max-h-48 overflow-y-auto min-h-[72px]">
-              {logs.length > 0 ? (
-                logs.map((log, i) => <div key={i}>{">"} {log}</div>)
-              ) : (
-                <div>{">"}</div>
-              )}
+            <div className="space-y-2 rounded-xl border border-black bg-black p-3 text-xs text-green-400">
+              <div className="flex items-center justify-between font-mono uppercase tracking-wide text-green-300">
+                <span>Discovery Trace</span>
+                <span>{logs.length} step{logs.length === 1 ? "" : "s"}</span>
+              </div>
+              <div className="min-h-[88px] max-h-56 overflow-y-auto font-mono">
+                {logs.length > 0 ? (
+                  logs.map((log, index) => (
+                    <div
+                      key={`${log.step}-${index}`}
+                      className="flex items-start justify-between gap-3 border-b border-white/10 py-1 last:border-b-0"
+                    >
+                      <div className="min-w-0">
+                        <div>{">"} {log.step}</div>
+                      </div>
+                      <div className="shrink-0 text-[11px] text-green-200">
+                        {log.status}
+                        {typeof log.duration === "number"
+                          ? ` | ${Math.round(log.duration)}ms`
+                          : ""}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div>{">"} Discovery activity will appear here.</div>
+                )}
+              </div>
             </div>
 
             {message ? (
-              <div className="text-sm rounded-lg bg-gray-100 px-3 py-2">
+              <div className="rounded-lg bg-gray-100 px-3 py-2 text-sm">
                 {message}
               </div>
             ) : null}
 
-            {lastScanCompletedAt ? (
+            {lastDiscoveryCompletedAt ? (
               <div className="text-sm text-gray-600">
-                Last scan completed at{" "}
-                {new Date(lastScanCompletedAt).toLocaleString()}.
+                Last discovery completed at{" "}
+                {new Date(lastDiscoveryCompletedAt).toLocaleString()}.
               </div>
             ) : null}
-          </div>
+          </section>
 
-          <div className="border rounded-xl p-4 space-y-4">
-            <div className="text-xl font-semibold">Create Organization</div>
-
+          <section className="rounded-xl border p-4">
+            <div className="mb-4 text-xl font-semibold">Create Organization</div>
             <form onSubmit={handleCreateOrganization} className="space-y-4">
               <label className="block space-y-2">
                 <span className="text-sm font-medium">Name</span>
                 <input
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
                   value={createOrgForm.name}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
@@ -558,7 +531,6 @@ export default function DiscoverPage() {
                       name: e.target.value,
                     }))
                   }
-                  placeholder="Example Nonprofit"
                   required
                 />
               </label>
@@ -566,22 +538,21 @@ export default function DiscoverPage() {
               <label className="block space-y-2">
                 <span className="text-sm font-medium">Entity Type</span>
                 <input
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
-                  value={createOrgForm.entity_type}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={createOrgForm.entityType}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
                       ...prev,
-                      entity_type: e.target.value,
+                      entityType: e.target.value,
                     }))
                   }
-                  placeholder="nonprofit"
                 />
               </label>
 
               <label className="block space-y-2">
                 <span className="text-sm font-medium">Mission</span>
                 <textarea
-                  className="w-full border rounded-lg px-3 py-2 text-sm min-h-[120px]"
+                  className="min-h-[120px] w-full rounded-lg border px-3 py-2 text-sm"
                   value={createOrgForm.mission}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
@@ -589,16 +560,13 @@ export default function DiscoverPage() {
                       mission: e.target.value,
                     }))
                   }
-                  placeholder="Supports arts and youth programs in Appalachia."
                 />
               </label>
 
               <label className="block space-y-2">
-                <span className="text-sm font-medium">
-                  Geographies (comma-separated)
-                </span>
+                <span className="text-sm font-medium">Geographies</span>
                 <input
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
                   value={createOrgForm.geographies}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
@@ -606,60 +574,68 @@ export default function DiscoverPage() {
                       geographies: e.target.value,
                     }))
                   }
-                  placeholder="West Virginia, Appalachia"
                 />
               </label>
 
               <label className="block space-y-2">
-                <span className="text-sm font-medium">
-                  Focus Areas (comma-separated)
-                </span>
+                <span className="text-sm font-medium">Focus Areas</span>
                 <input
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
-                  value={createOrgForm.focus_areas}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={createOrgForm.focusAreas}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
                       ...prev,
-                      focus_areas: e.target.value,
+                      focusAreas: e.target.value,
                     }))
                   }
-                  placeholder="arts, youth, education"
                 />
               </label>
 
               <label className="block space-y-2">
                 <span className="text-sm font-medium">Tax Status</span>
                 <input
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
-                  value={createOrgForm.tax_status}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={createOrgForm.taxStatus}
                   onChange={(e) =>
                     setCreateOrgForm((prev) => ({
                       ...prev,
-                      tax_status: e.target.value,
+                      taxStatus: e.target.value,
                     }))
                   }
-                  placeholder="501(c)(3)"
                 />
               </label>
 
               <button
                 type="submit"
-                disabled={loading}
-                className="rounded-lg bg-black text-white px-4 py-2 text-sm disabled:opacity-50"
+                className="rounded-lg border px-4 py-2 text-sm"
               >
-                {loading ? "Saving..." : "Create Organization"}
+                Create Organization
               </button>
             </form>
-          </div>
+          </section>
         </div>
 
-        <div className="border rounded-xl overflow-hidden">
-          <div className="px-4 py-3 border-b font-semibold">Opportunities</div>
+        <section className="overflow-hidden rounded-xl border">
+          <div className="border-b px-4 py-3 font-semibold">
+            Ranked Opportunities
+          </div>
 
-          {opportunities.length === 0 ? (
+          {!organizationId ? (
             <div className="p-4 text-sm text-gray-600">
-              No opportunities loaded yet. Select an organization and run a
-              scan to review ranked matches.
+              Select an organization to review its summary, then run discovery
+              or load saved opportunities.
+            </div>
+          ) : matchLoading ? (
+            <div className="p-4 text-sm text-gray-600">Loading matches...</div>
+          ) : !hasLoadedMatches ? (
+            <div className="p-4 text-sm text-gray-600">
+              No discovery results loaded yet. Run discovery or load saved
+              opportunities to see ranked results.
+            </div>
+          ) : matches.length === 0 ? (
+            <div className="p-4 text-sm text-gray-600">
+              No saved opportunities are available for this organization yet.
+              Run discovery to see ranked opportunities.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -670,86 +646,66 @@ export default function DiscoverPage() {
                     <th className="px-4 py-3">Funder</th>
                     <th className="px-4 py-3">Deadline</th>
                     <th className="px-4 py-3">Amount</th>
-                    <th className="px-4 py-3">Fit</th>
+                    <th className="px-4 py-3">Score</th>
                     <th className="px-4 py-3">Stage</th>
+                    <th className="px-4 py-3">Reasons</th>
                     <th className="px-4 py-3">Source</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {opportunities.map((opp) => {
-                    const amount =
-                      opp.amount_min && opp.amount_max
-                        ? `${opp.currency} ${opp.amount_min}–${opp.amount_max}`
-                        : opp.amount_min
-                          ? `${opp.currency} ${opp.amount_min}+`
-                          : "—";
-
-                    const deadline = opp.deadline_at
-                      ? new Date(opp.deadline_at).toLocaleDateString()
+                  {matches.map((match) => {
+                    const stageValue = formatStageValue(match.pipelineStage);
+                    const deadline = match.deadlineAt
+                      ? new Date(match.deadlineAt).toLocaleDateString()
                       : "—";
-                    const stageValue = STAGE_OPTIONS.includes(
-                      opp.pipeline_stage as PipelineStage
-                    )
-                      ? opp.pipeline_stage
-                      : "";
 
                     return (
-                      <tr key={opp.id} className="border-t align-top">
+                      <tr key={match.opportunityId} className="align-top border-t">
                         <td className="px-4 py-3">
-                          <div className="font-medium">{opp.title}</div>
-                          {opp.application_url ? (
+                          <div className="font-medium">{match.title}</div>
+                          {match.applicationUrl ? (
                             <a
-                              href={opp.application_url}
+                              href={match.applicationUrl}
                               target="_blank"
                               rel="noreferrer"
-                              className="text-xs text-blue-600 underline"
+                              className="mt-1 inline-block text-xs text-blue-600 underline"
                             >
                               Apply link
                             </a>
                           ) : null}
                         </td>
-                        <td className="px-4 py-3">{opp.funder_name || "—"}</td>
+                        <td className="px-4 py-3">{match.funderName || "—"}</td>
                         <td className="px-4 py-3">{deadline}</td>
-                        <td className="px-4 py-3">{amount}</td>
-                        <td className="px-4 py-3">
-                          <div className="font-medium">{opp.fit_score}</div>
-                          {Array.isArray(opp.fit_reasons) &&
-                          opp.fit_reasons.length > 0 ? (
-                            <ul className="mt-1 text-xs text-gray-600 list-disc ml-4">
-                              {opp.fit_reasons.map((reason, idx) => (
-                                <li key={idx}>{reason}</li>
-                              ))}
-                            </ul>
-                          ) : null}
-                        </td>
+                        <td className="px-4 py-3">{formatCurrencyRange(match)}</td>
+                        <td className="px-4 py-3 font-semibold">{match.score}</td>
                         <td className="px-4 py-3">
                           <select
-                            className="border rounded-md px-2 py-1 bg-white"
+                            className="rounded-md border bg-white px-2 py-1"
                             value={stageValue}
                             onChange={(e) =>
                               handleStageChange(
-                                opp.id,
-                                e.target.value as PipelineStage
+                                match.opportunityId,
+                                e.target.value as MatchStage
                               )
                             }
-                            disabled={
-                              !organizationProfileId ||
-                              updatingStageId === opp.id
-                            }
+                            disabled={!organizationId || updatingStageId === match.opportunityId}
                           >
                             {stageValue === "" ? (
                               <option value="" disabled>
-                                {opp.pipeline_stage}
+                                {match.pipelineStage || "unknown"}
                               </option>
                             ) : null}
-                            {STAGE_OPTIONS.map((stage) => (
+                            {MATCH_STAGE_OPTIONS.map((stage) => (
                               <option key={stage} value={stage}>
                                 {stage}
                               </option>
                             ))}
                           </select>
                         </td>
-                        <td className="px-4 py-3">{opp.source_name}</td>
+                        <td className="px-4 py-3">
+                          {match.reasons?.join(", ") || "—"}
+                        </td>
+                        <td className="px-4 py-3">{match.sourceName || "—"}</td>
                       </tr>
                     );
                   })}
@@ -757,7 +713,7 @@ export default function DiscoverPage() {
               </table>
             </div>
           )}
-        </div>
+        </section>
       </div>
     </main>
   );

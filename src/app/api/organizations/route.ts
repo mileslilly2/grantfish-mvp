@@ -1,79 +1,67 @@
-import { NextRequest, NextResponse } from "next/server";
-import { pool } from "@/lib/db";
-import type { OrganizationSummary } from "@/types/organization";
+import { ensureArray } from "@/lib/ensure-array";
+import { ensureActiveAppSchema, getPool } from "@/lib/pg";
 
-type OrganizationRow = OrganizationSummary;
+export const runtime = "nodejs";
 
-function toTextArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
+type OrganizationResponse = {
+  id: string;
+  name: string;
+  entityType: string;
+  mission: string;
+  geographies: string[];
+  focusAreas: string[];
+  taxStatus: string;
+};
 
-  return value
-    .map((entry) => String(entry).trim())
-    .filter(Boolean);
-}
-
-function mapOrganizationRow(row: Record<string, unknown>): OrganizationRow {
+function serializeRow(row: Record<string, unknown>): OrganizationResponse {
   return {
-    id: String(row.id),
+    id: String(row.id ?? ""),
     name: String(row.name ?? ""),
-    entity_type: String(row.entity_type ?? ""),
+    entityType: String(row.entityType ?? row.entity_type ?? ""),
     mission: String(row.mission ?? ""),
-    geographies: toTextArray(row.geographies),
-    focus_areas: toTextArray(row.focus_areas),
-    tax_status:
-      row.tax_status === null || row.tax_status === undefined
-        ? null
-        : String(row.tax_status),
+    geographies: ensureArray(row.geographies),
+    focusAreas: ensureArray(row.focusAreas ?? row.focus_areas),
+    taxStatus: String(row.taxStatus ?? row.tax_status ?? ""),
   };
 }
 
 export async function GET() {
   try {
-    const result = await pool.query(
-      `
+    const pool = getPool();
+    await ensureActiveAppSchema();
+
+    const result = await pool.query(`
       SELECT
         id,
         name,
-        entity_type,
+        entity_type AS "entityType",
         mission,
         geographies,
-        focus_areas,
-        tax_status
+        focus_areas AS "focusAreas",
+        tax_status AS "taxStatus"
       FROM organization_profiles
       ORDER BY name ASC
-      `
-    );
+    `);
 
-    return NextResponse.json(result.rows.map(mapOrganizationRow));
-  } catch (error) {
-    console.error("List organizations error:", error);
-
-    return NextResponse.json(
-      { error: "Failed to load organizations" },
-      { status: 500 }
-    );
+    return Response.json(result.rows.map(serializeRow));
+  } catch (err) {
+    console.error("GET ORGS ERROR:", err);
+    return Response.json({ error: String(err) }, { status: 500 });
   }
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
+    const pool = getPool();
+    await ensureActiveAppSchema();
     const body = await req.json();
+
     const name = String(body?.name ?? "").trim();
-
-    if (!name) {
-      return NextResponse.json(
-        { error: "name is required" },
-        { status: 400 }
-      );
-    }
-
-    const entityType = String(body?.entity_type ?? "").trim() || "nonprofit";
+    const entityType = String(body?.entityType ?? "").trim();
     const mission = String(body?.mission ?? "").trim();
-    const geographies = toTextArray(body?.geographies);
-    const focusAreas = toTextArray(body?.focus_areas);
-    const taxStatus = String(body?.tax_status ?? "").trim() || null;
+    const geographies = ensureArray(body?.geographies);
+    const focusAreas = ensureArray(body?.focusAreas);
+    const taxStatus = String(body?.taxStatus ?? "").trim();
 
     const result = await pool.query(
       `
@@ -85,28 +73,29 @@ export async function POST(req: NextRequest) {
         focus_areas,
         tax_status
       )
-      VALUES ($1, $2, $3, $4, $5, $6)
+      VALUES (
+        $1,
+        $2,
+        $3,
+        $4::text[],
+        $5::text[],
+        $6
+      )
       RETURNING
         id,
         name,
-        entity_type,
+        entity_type AS "entityType",
         mission,
         geographies,
-        focus_areas,
-        tax_status
+        focus_areas AS "focusAreas",
+        tax_status AS "taxStatus"
       `,
       [name, entityType, mission, geographies, focusAreas, taxStatus]
     );
 
-    return NextResponse.json(mapOrganizationRow(result.rows[0]), {
-      status: 201,
-    });
-  } catch (error) {
-    console.error("Create organization error:", error);
-
-    return NextResponse.json(
-      { error: "Failed to create organization" },
-      { status: 500 }
-    );
+    return Response.json(serializeRow(result.rows[0]));
+  } catch (err) {
+    console.error("CREATE ORG ERROR:", err);
+    return Response.json({ error: String(err) }, { status: 500 });
   }
 }

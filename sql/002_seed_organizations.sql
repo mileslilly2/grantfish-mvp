@@ -1,13 +1,18 @@
-INSERT INTO organization_profiles (
+-- Ensure UUID generation works
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+INSERT INTO "Organization" (
+  id,
   name,
-  entity_type,
+  "entityType",
   mission,
   geographies,
-  focus_areas,
-  tax_status
+  "focusAreas",
+  "taxStatus"
 )
 VALUES
   (
+    gen_random_uuid(),
     'Mylan Park Foundation',
     'nonprofit',
     'Expands community access to recreation, wellness, and regional events through Mylan Park programming and capital support.',
@@ -16,6 +21,7 @@ VALUES
     '501(c)(3)'
   ),
   (
+    gen_random_uuid(),
     'Morgantown Area Youth Services Project',
     'nonprofit',
     'Provides emergency shelter, transitional housing, and supportive services for youth and families facing homelessness and instability.',
@@ -24,6 +30,7 @@ VALUES
     '501(c)(3)'
   ),
   (
+    gen_random_uuid(),
     'Mon River Trails Conservancy',
     'nonprofit',
     'Builds, maintains, and promotes trail access and outdoor recreation assets throughout the Morgantown region.',
@@ -32,6 +39,7 @@ VALUES
     '501(c)(3)'
   ),
   (
+    gen_random_uuid(),
     'Empty Bowls Monongalia',
     'nonprofit',
     'Mobilizes volunteers and community events to raise funds and awareness for hunger relief in Monongalia County.',
@@ -40,6 +48,7 @@ VALUES
     '501(c)(3)'
   ),
   (
+    gen_random_uuid(),
     'United Way of Monongalia and Preston Counties',
     'nonprofit',
     'Invests in local nonprofits and collaborative initiatives that improve health, education, and financial stability.',

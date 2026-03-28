@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
+import { ensureArray, safeArray } from "@/lib/ensure-array";
 import { addLog } from "@/lib/logStore";
+import type { NormalizedOpportunity } from "@/types/normalized";
+import type { OpportunityStatus } from "@/types/db";
 
 type OrgLike = {
   mission?: string;
-  focus_areas?: string[];
-  geographies?: string[];
-  focusAreas?: string[];
+  focus_areas?: string[] | string;
+  geographies?: string[] | string;
+  focusAreas?: string[] | string;
 };
 
 type SourceType = "government_portal" | "foundation_site";
@@ -34,23 +37,91 @@ type TinyFishStreamEvent = TinyFishRunResponse & {
 
 type RawOpportunity = Record<string, unknown>;
 
+function truncateForError(value: string, maxLength = 180): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "(empty response body)";
+  }
+
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength)}...`
+    : normalized;
+}
+
+function tryParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function formatTinyFishHttpError(params: {
+  source: LiveSource;
+  status: number;
+  bodyText: string;
+  contentType: string | null;
+}): string {
+  const { source, status, bodyText, contentType } = params;
+  const parsed = tryParseJson(bodyText);
+
+  if (parsed && typeof parsed === "object") {
+    const record = parsed as Record<string, unknown>;
+    const message =
+      stableText(record.message) ||
+      stableText(record.error) ||
+      stableText(record.detail);
+
+    if (message) {
+      return `${source.name} TinyFish upstream error (${status}): ${message}`;
+    }
+  }
+
+  const responseKind =
+    contentType && contentType.toLowerCase().includes("json")
+      ? "JSON"
+      : "non-JSON";
+
+  return `${source.name} TinyFish upstream error (${status}, ${responseKind} response): ${truncateForError(bodyText)}`;
+}
+
+function parseTinyFishStreamEvent(
+  rawPayload: string,
+  source: LiveSource
+): TinyFishStreamEvent {
+  try {
+    return JSON.parse(rawPayload) as TinyFishStreamEvent;
+  } catch {
+    throw new Error(
+      `${source.name} TinyFish returned a non-JSON stream event: ${truncateForError(rawPayload)}`
+    );
+  }
+}
+
+function hasOpportunityArray(
+  value: unknown
+): value is { opportunities: RawOpportunity[] } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "opportunities" in value &&
+    Array.isArray(value.opportunities)
+  );
+}
+
 function getFocusAreas(org: OrgLike): string[] {
-  return Array.isArray(org.focus_areas)
-    ? org.focus_areas
-    : Array.isArray(org.focusAreas)
-    ? org.focusAreas
-    : [];
+  return ensureArray(org.focus_areas ?? org.focusAreas);
 }
 
 function getGeographies(org: OrgLike): string[] {
-  return Array.isArray(org.geographies) ? org.geographies : [];
+  return ensureArray(org.geographies);
 }
 
 function buildKeywords(org: OrgLike): string {
-  const parts = [
+  const parts = safeArray([
     ...(getFocusAreas(org) || []),
     ...(getGeographies(org) || []),
-  ]
+  ])
     .map((x) => String(x).trim())
     .filter(Boolean);
 
@@ -208,6 +279,19 @@ function stableText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+function normalizeOpportunityStatus(value: unknown): OpportunityStatus {
+  switch (stableText(value).toLowerCase()) {
+    case "open":
+    case "closed":
+    case "rolling":
+    case "draft":
+    case "unknown":
+      return stableText(value).toLowerCase() as OpportunityStatus;
+    default:
+      return "open";
+  }
+}
+
 function makeDedupeKey(sourceName: string, title: string, deadlineAt?: string | null, canonicalUrl?: string | null) {
   const raw = [sourceName, title, deadlineAt ?? "", canonicalUrl ?? ""].join("|").toLowerCase();
   return createHash("sha256").update(raw).digest("hex");
@@ -226,7 +310,10 @@ function toNumberOrNull(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function normalizeOpportunity(rawItem: RawOpportunity, source: LiveSource) {
+function normalizeOpportunity(
+  rawItem: RawOpportunity,
+  source: LiveSource
+): NormalizedOpportunity | null {
   const title = stableText(rawItem.title);
   if (!title) return null;
 
@@ -242,7 +329,7 @@ function normalizeOpportunity(rawItem: RawOpportunity, source: LiveSource) {
     canonicalUrl,
     title,
     summary: stableText(rawItem.summary) || null,
-    status: stableText(rawItem.status) || "open",
+    status: normalizeOpportunityStatus(rawItem.status),
     deadlineAt,
     funderName: stableText(rawItem.funderName) || source.name,
     amountMin: toNumberOrNull(rawItem.amountMin),
@@ -265,7 +352,16 @@ function normalizeOpportunity(rawItem: RawOpportunity, source: LiveSource) {
   };
 }
 
-async function runTinyFishSource(source: LiveSource, org: OrgLike) {
+function isNormalizedOpportunity(
+  item: NormalizedOpportunity | null
+): item is NormalizedOpportunity {
+  return item !== null;
+}
+
+async function runTinyFishSource(
+  source: LiveSource,
+  org: OrgLike
+): Promise<NormalizedOpportunity[]> {
   const apiKey = process.env.TINYFISH_API_KEY;
   const baseUrl = process.env.TINYFISH_BASE_URL || "https://agent.tinyfish.ai";
 
@@ -288,8 +384,28 @@ async function runTinyFishSource(source: LiveSource, org: OrgLike) {
   });
 
   if (!start.ok) {
-    const text = await start.text();
-    throw new Error(`${source.name} TinyFish run failed: ${start.status} ${text}`);
+    const bodyText = await start.text();
+    throw new Error(
+      formatTinyFishHttpError({
+        source,
+        status: start.status,
+        bodyText,
+        contentType: start.headers.get("content-type"),
+      })
+    );
+  }
+
+  const contentType = start.headers.get("content-type");
+  if (
+    contentType &&
+    !contentType.toLowerCase().includes("text/event-stream")
+  ) {
+    const bodyText = await start.text();
+    throw new Error(
+      `${source.name} TinyFish returned a non-stream response (${
+        start.status
+      }, ${contentType}): ${truncateForError(bodyText)}`
+    );
   }
 
   if (!start.body) {
@@ -302,8 +418,7 @@ async function runTinyFishSource(source: LiveSource, org: OrgLike) {
   let result: unknown = null;
 
   const handleEvent = (rawEvent: string) => {
-    const dataLines = rawEvent
-      .split(/\r?\n/)
+    const dataLines = safeArray<string>(rawEvent.split(/\r?\n/))
       .filter((line) => line.startsWith("data:"))
       .map((line) => line.slice(5).trim())
       .filter(Boolean);
@@ -312,7 +427,7 @@ async function runTinyFishSource(source: LiveSource, org: OrgLike) {
       return false;
     }
 
-    const event = JSON.parse(dataLines.join("\n")) as TinyFishStreamEvent;
+    const event = parseTinyFishStreamEvent(dataLines.join("\n"), source);
     const eventType = stableText(event.type);
 
     if (eventType === "PROGRESS") {
@@ -365,17 +480,26 @@ async function runTinyFishSource(source: LiveSource, org: OrgLike) {
     throw new Error(`${source.name} TinyFish stream ended without a COMPLETE event`);
   }
 
-  const payload = result;
+  const payload =
+    typeof result === "string" ? tryParseJson(result) ?? result : result;
 
   const items: RawOpportunity[] = Array.isArray(payload)
     ? payload as RawOpportunity[]
-    : Array.isArray(payload?.opportunities)
-    ? payload.opportunities as RawOpportunity[]
+    : hasOpportunityArray(payload)
+    ? payload.opportunities
     : [];
 
-  return items
+  if (items.length === 0) {
+    throw new Error(
+      `${source.name} TinyFish returned a malformed success payload: ${truncateForError(
+        typeof result === "string" ? result : JSON.stringify(result)
+      )}`
+    );
+  }
+
+  return safeArray<RawOpportunity>(items)
     .map((item) => normalizeOpportunity(item, source))
-    .filter(Boolean);
+    .filter(isNormalizedOpportunity);
 }
 
 function dedupeByKey<T extends { dedupeKey: string }>(items: T[]) {
@@ -386,7 +510,30 @@ function dedupeByKey<T extends { dedupeKey: string }>(items: T[]) {
   return Array.from(map.values());
 }
 
-function getMockFallback() {
+function getLiveDiscoveryConfig() {
+  const rawFlag = String(process.env.GRANTFISH_USE_LIVE_TINYFISH ?? "").trim();
+  const normalizedFlag = rawFlag.toLowerCase();
+  const useLive =
+    normalizedFlag === "true" ||
+    normalizedFlag === "1" ||
+    normalizedFlag === "yes" ||
+    normalizedFlag === "on";
+  const apiKey = String(process.env.TINYFISH_API_KEY ?? "").trim();
+  const hasKey = apiKey.length > 0;
+  const baseUrl = String(
+    process.env.TINYFISH_BASE_URL || "https://agent.tinyfish.ai"
+  ).trim();
+
+  return {
+    rawFlag,
+    useLive,
+    hasKey,
+    hasBaseUrl: baseUrl.length > 0,
+    baseUrl,
+  };
+}
+
+function getMockFallback(): NormalizedOpportunity[] {
   return [
     {
       type: "grant",
@@ -439,16 +586,38 @@ function getMockFallback() {
   ];
 }
 
-export async function runMockGrantDiscovery(org: OrgLike = {}) {
-  const useLive = process.env.GRANTFISH_USE_LIVE_TINYFISH === "true";
-  const hasKey = Boolean(process.env.TINYFISH_API_KEY);
+export async function runMockGrantDiscovery(
+  org: OrgLike = {}
+): Promise<NormalizedOpportunity[]> {
+  const config = getLiveDiscoveryConfig();
 
-  if (!useLive || !hasKey) {
+  console.info(
+    `[discovery] config liveFlag=${config.rawFlag || "<unset>"} resolvedLive=${config.useLive} hasKey=${config.hasKey} hasBaseUrl=${config.hasBaseUrl}`
+  );
+
+  if (!config.useLive) {
+    addLog("Live TinyFish disabled; using mock fallback");
+    console.warn(
+      `[discovery] using mock fallback because live discovery is disabled by GRANTFISH_USE_LIVE_TINYFISH=${config.rawFlag || "<unset>"}`
+    );
     return getMockFallback();
   }
 
+  if (!config.hasKey) {
+    addLog("TinyFish API key missing; using mock fallback");
+    console.warn(
+      "[discovery] using mock fallback because TINYFISH_API_KEY is missing"
+    );
+    return getMockFallback();
+  }
+
+  addLog("Attempting live TinyFish discovery");
+  console.info(
+    `[discovery] attempting live TinyFish discovery via ${config.baseUrl}`
+  );
+
   const settled = await Promise.allSettled(
-    LIVE_SOURCES.map((source) => runTinyFishSource(source, org))
+    safeArray<LiveSource>(LIVE_SOURCES).map((source) => runTinyFishSource(source, org))
   );
 
   const liveResults = settled.flatMap((result) =>
@@ -456,12 +625,23 @@ export async function runMockGrantDiscovery(org: OrgLike = {}) {
   );
 
   if (liveResults.length > 0) {
+    addLog(`Live TinyFish returned ${liveResults.length} results before dedupe`);
+    console.info(
+      `[discovery] live TinyFish discovery succeeded with ${liveResults.length} normalized opportunities before dedupe`
+    );
     return dedupeByKey(liveResults);
   }
 
-  const errors = settled
+  const errors = safeArray<PromiseSettledResult<NormalizedOpportunity[]>>(settled)
     .filter((r): r is PromiseRejectedResult => r.status === "rejected")
     .map((r) => r.reason instanceof Error ? r.reason.message : String(r.reason));
+
+  console.error(
+    `[discovery] live TinyFish discovery failed across all sources: ${
+      errors.length > 0 ? errors.join(" | ") : "No live opportunities returned"
+    }`
+  );
+  addLog("All live TinyFish sources failed");
 
   throw new Error(
     errors.length > 0
