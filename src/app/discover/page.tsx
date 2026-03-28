@@ -255,10 +255,30 @@ export default function DiscoverPage() {
         result.mode === "live"
           ? "live TinyFish discovery"
           : "mock fallback discovery";
+      const timedOutSourceCount =
+        result.sourceOutcomes?.filter((outcome) => outcome.status === "timeout")
+          .length ?? 0;
+      const failedSourceCount =
+        result.sourceOutcomes?.filter((outcome) => outcome.status === "error")
+          .length ?? 0;
+      const summaryParts = [
+        `Completed ${modeLabel}.`,
+        `Discovered ${result.discoveredCount} opportunities and saved ${result.savedCount}.`,
+      ];
 
-      setMessage(
-        `Completed ${modeLabel}. Discovered ${result.discoveredCount} opportunities and saved ${result.savedCount}.`
-      );
+      if (timedOutSourceCount > 0) {
+        summaryParts.push(
+          `${timedOutSourceCount} source${timedOutSourceCount === 1 ? "" : "s"} timed out.`
+        );
+      }
+
+      if (failedSourceCount > 0) {
+        summaryParts.push(
+          `${failedSourceCount} source${failedSourceCount === 1 ? "" : "s"} failed.`
+        );
+      }
+
+      setMessage(summaryParts.join(" "));
     } catch (err) {
       setMessage(
         err instanceof Error ? err.message : "Failed to run discovery"

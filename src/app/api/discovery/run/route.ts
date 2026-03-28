@@ -66,11 +66,12 @@ export async function POST(req: Request) {
     );
 
     addLog("Running discovery");
-    const discovered = await runMockGrantDiscovery({
+    const discovery = await runMockGrantDiscovery({
       mission: organization.mission,
       focusAreas: ensureArray(organization.focusAreas),
       geographies: ensureArray(organization.geographies),
     });
+    const discovered = discovery.opportunities;
     addLog(`Discovered ${discovered.length} opportunities`);
     addLog("Saving opportunities");
 
@@ -234,8 +235,15 @@ export async function POST(req: Request) {
       savedCount += 1;
     }
 
-    const usedLive = discovered.some(
-      (item) => item.metadata?.live_source === true
+    const usedLive = discovery.mode === "live";
+    const timedOutSources = discovery.sourceOutcomes.filter(
+      (outcome) => outcome.status === "timeout"
+    );
+    const failedSources = discovery.sourceOutcomes.filter(
+      (outcome) => outcome.status === "error"
+    );
+    const successfulSources = discovery.sourceOutcomes.filter(
+      (outcome) => outcome.status === "success"
     );
 
     console.info(
@@ -247,13 +255,19 @@ export async function POST(req: Request) {
       `Completed ${usedLive ? "live TinyFish" : "mock fallback"} discovery`
     );
     addLog(`Saved ${savedCount} opportunities`);
+    if (usedLive) {
+      addLog(
+        `Live source summary: ${successfulSources.length} succeeded, ${timedOutSources.length} timed out, ${failedSources.length} failed`
+      );
+    }
 
     return Response.json({
       organizationId,
-      mode: usedLive ? "live" : "mock",
+      mode: discovery.mode,
       discoveredCount: discovered.length,
       savedCount,
       opportunityIds: savedOpportunityIds,
+      sourceOutcomes: discovery.sourceOutcomes,
     });
   } catch (err) {
     console.error("DISCOVERY RUN ERROR:", err);

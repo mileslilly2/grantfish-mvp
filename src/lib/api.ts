@@ -64,6 +64,12 @@ export type DiscoveryRunResult = {
   discoveredCount: number;
   savedCount: number;
   opportunityIds: string[];
+  sourceOutcomes?: Array<{
+    sourceName: string;
+    status: "success" | "timeout" | "error";
+    opportunityCount: number;
+    message: string;
+  }>;
 };
 
 export type DiscoveryLogEntry = {

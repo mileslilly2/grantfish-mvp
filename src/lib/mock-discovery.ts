@@ -21,6 +21,19 @@ type LiveSource = {
   goal: (org: OrgLike) => string;
 };
 
+export type DiscoverySourceOutcome = {
+  sourceName: string;
+  status: "success" | "timeout" | "error";
+  opportunityCount: number;
+  message: string;
+};
+
+export type DiscoveryExecutionResult = {
+  mode: "live" | "mock";
+  opportunities: NormalizedOpportunity[];
+  sourceOutcomes: DiscoverySourceOutcome[];
+};
+
 type TinyFishRunResponse = {
   result?: unknown;
   resultJson?: unknown;
@@ -36,6 +49,9 @@ type TinyFishStreamEvent = TinyFishRunResponse & {
 };
 
 type RawOpportunity = Record<string, unknown>;
+
+const MAX_OPPORTUNITIES_PER_SOURCE = 4;
+const DEFAULT_TINYFISH_SOURCE_TIMEOUT_MS = 45_000;
 
 function truncateForError(value: string, maxLength = 180): string {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -64,6 +80,7 @@ function formatTinyFishHttpError(params: {
 }): string {
   const { source, status, bodyText, contentType } = params;
   const parsed = tryParseJson(bodyText);
+  const normalizedBody = bodyText.toLowerCase();
 
   if (parsed && typeof parsed === "object") {
     const record = parsed as Record<string, unknown>;
@@ -73,8 +90,15 @@ function formatTinyFishHttpError(params: {
       stableText(record.detail);
 
     if (message) {
+      if (message.toLowerCase().includes("timeout")) {
+        return `${source.name} TinyFish upstream timeout (${status}): ${message}`;
+      }
       return `${source.name} TinyFish upstream error (${status}): ${message}`;
     }
+  }
+
+  if (normalizedBody.includes("timeout")) {
+    return `${source.name} TinyFish upstream timeout (${status}): ${truncateForError(bodyText)}`;
   }
 
   const responseKind =
@@ -128,37 +152,48 @@ function buildKeywords(org: OrgLike): string {
   return parts.length > 0 ? parts.join(", ") : "arts, youth, education, West Virginia, Appalachia";
 }
 
-function stableNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
+function buildMissionSnippet(org: OrgLike): string {
+  const mission = stableText(org.mission);
+  if (!mission) {
+    return "Nonprofit seeking mission-aligned grant opportunities.";
   }
 
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  return undefined;
+  return mission.length > 240 ? `${mission.slice(0, 240).trim()}...` : mission;
 }
 
-const LIVE_SOURCES: LiveSource[] = [
-  {
-    name: "Grants.gov",
-    sourceType: "government_portal",
-    url: "https://www.grants.gov/search-grants",
-    browserProfile: "lite",
-    goal: (org) => `
-You are extracting grant opportunities for a nonprofit.
+function getSourceTimeoutMs(): number {
+  const raw = Number(process.env.GRANTFISH_TINYFISH_SOURCE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 5_000
+    ? raw
+    : DEFAULT_TINYFISH_SOURCE_TIMEOUT_MS;
+}
 
-Target keywords: ${buildKeywords(org)}
+function buildGoalInstructions(params: {
+  org: OrgLike;
+  sourceLabel: string;
+  sourceSpecificSteps: string[];
+  locationHint?: string;
+  funderHint?: string;
+}) {
+  const { org, sourceLabel, sourceSpecificSteps, locationHint, funderHint } = params;
 
-Tasks:
-1. Use the page's visible search/filter tools if available.
-2. Look for opportunities relevant to the target keywords.
-3. Open promising result pages when needed to capture details.
-4. Return up to 8 currently relevant opportunities.
+  return `
+You are extracting grant opportunities for a nonprofit from ${sourceLabel}.
+
+Organization mission summary: ${buildMissionSnippet(org)}
+Priority keywords: ${buildKeywords(org)}
+${locationHint ? `Location priority: ${locationHint}` : ""}
+${funderHint ? `Funder/context: ${funderHint}` : ""}
+
+Work efficiently:
+1. Use the site's visible search or filter tools immediately with the priority keywords.
+2. Review only the most relevant results on the first page.
+3. Open at most 3 promising detail pages.
+4. Stop once you have found up to ${MAX_OPPORTUNITIES_PER_SOURCE} relevant current opportunities.
+5. If nothing relevant is visible quickly, return an empty opportunities array instead of continuing to browse.
+
+Source-specific steps:
+${sourceSpecificSteps.map((step, index) => `${index + 1}. ${step}`).join("\n")}
 
 Return ONLY valid JSON with this shape:
 {
@@ -185,93 +220,77 @@ Return ONLY valid JSON with this shape:
     }
   ]
 }
-`.trim(),
+`.trim();
+}
+
+function stableNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
+const LIVE_SOURCES: LiveSource[] = [
+  {
+    name: "Grants.gov",
+    sourceType: "government_portal",
+    url: "https://www.grants.gov/search-grants",
+    browserProfile: "lite",
+    goal: (org) =>
+      buildGoalInstructions({
+        org,
+        sourceLabel: "Grants.gov",
+        sourceSpecificSteps: [
+          "Search directly for current grant listings matching the priority keywords.",
+          "Prefer open or rolling opportunities and skip clearly expired items.",
+          "Capture only grants plausibly relevant to nonprofit organizations.",
+        ],
+        locationHint: getGeographies(org).join(", ") || "United States",
+      }),
   },
   {
     name: "WV State Grants",
     sourceType: "government_portal",
     url: "https://grants.wv.gov/grants/Pages/default.aspx",
     browserProfile: "lite",
-    goal: (org) => `
-You are extracting West Virginia grant opportunities for a nonprofit.
-
-Target keywords: ${buildKeywords(org)}
-
-Tasks:
-1. Review the WV funding opportunities page.
-2. If there are visible filters or agency sections, use them to find relevant opportunities.
-3. Open detail pages when useful.
-4. Return up to 8 relevant opportunities.
-
-Return ONLY valid JSON with this shape:
-{
-  "opportunities": [
-    {
-      "title": "string",
-      "summary": "string or null",
-      "status": "open | closed | rolling | draft | unknown",
-      "deadlineAt": "ISO-8601 datetime string or null",
-      "funderName": "West Virginia State Grants",
-      "amountMin": number or null,
-      "amountMax": number or null,
-      "currency": "USD",
-      "eligibilityText": "string or null",
-      "requirementsText": "string or null",
-      "applicationUrl": "absolute URL or null",
-      "sourceUrl": "absolute URL for the listing or detail page",
-      "canonicalUrl": "absolute canonical/detail URL if available, otherwise sourceUrl",
-      "missionAreas": ["string"],
-      "entityTypes": ["string"],
-      "locationScope": "West Virginia",
-      "country": "US",
-      "region": "WV"
-    }
-  ]
-}
-`.trim(),
+    goal: (org) =>
+      buildGoalInstructions({
+        org,
+        sourceLabel: "WV State Grants",
+        sourceSpecificSteps: [
+          "Review the current West Virginia grants listings or agency sections only.",
+          "Prefer statewide opportunities relevant to the nonprofit's mission and geography.",
+          "Skip generic navigation browsing if no relevant grants are visible quickly.",
+        ],
+        locationHint: "West Virginia",
+        funderHint: "West Virginia state funding opportunities",
+      }),
   },
   {
     name: "National Endowment for the Arts",
     sourceType: "government_portal",
     url: "https://www.arts.gov/grants",
     browserProfile: "lite",
-    goal: (org) => `
-You are extracting NEA grant opportunities for a nonprofit.
-
-Target keywords: ${buildKeywords(org)}
-
-Tasks:
-1. Review the current NEA grants page.
-2. Focus on current grant opportunities and deadlines relevant to organizations.
-3. Open detail pages if necessary.
-4. Return up to 8 relevant opportunities.
-
-Return ONLY valid JSON with this shape:
-{
-  "opportunities": [
-    {
-      "title": "string",
-      "summary": "string or null",
-      "status": "open | closed | rolling | draft | unknown",
-      "deadlineAt": "ISO-8601 datetime string or null",
-      "funderName": "National Endowment for the Arts",
-      "amountMin": number or null,
-      "amountMax": number or null,
-      "currency": "USD",
-      "eligibilityText": "string or null",
-      "requirementsText": "string or null",
-      "applicationUrl": "absolute URL or null",
-      "sourceUrl": "absolute URL for the listing or detail page",
-      "canonicalUrl": "absolute canonical/detail URL if available, otherwise sourceUrl",
-      "missionAreas": ["string"],
-      "entityTypes": ["string"],
-      "locationScope": "United States",
-      "country": "US",
-      "region": null
-    }
-  ]
-}
-`.trim(),
+    goal: (org) =>
+      buildGoalInstructions({
+        org,
+        sourceLabel: "National Endowment for the Arts",
+        sourceSpecificSteps: [
+          "Review only current NEA grant programs and deadlines.",
+          "Prefer grants for organizations rather than individuals when possible.",
+          "If the page shows only a small set of current programs, stop after capturing those.",
+        ],
+        locationHint: "United States",
+        funderHint: "National Endowment for the Arts",
+      }),
   },
 ];
 
@@ -369,137 +388,163 @@ async function runTinyFishSource(
     throw new Error("TINYFISH_API_KEY is missing");
   }
 
-  const start = await fetch(`${baseUrl}/v1/automation/run-sse`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-      "X-API-Key": apiKey,
-    },
-    body: JSON.stringify({
-      url: source.url,
-      goal: source.goal(org),
-      browser_profile: source.browserProfile ?? "lite",
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutMs = getSourceTimeoutMs();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!start.ok) {
-    const bodyText = await start.text();
-    throw new Error(
-      formatTinyFishHttpError({
-        source,
-        status: start.status,
-        bodyText,
-        contentType: start.headers.get("content-type"),
-      })
-    );
-  }
+  try {
+    const start = await fetch(`${baseUrl}/v1/automation/run-sse`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        "X-API-Key": apiKey,
+      },
+      body: JSON.stringify({
+        url: source.url,
+        goal: source.goal(org),
+        browser_profile: source.browserProfile ?? "lite",
+      }),
+      signal: controller.signal,
+    });
 
-  const contentType = start.headers.get("content-type");
-  if (
-    contentType &&
-    !contentType.toLowerCase().includes("text/event-stream")
-  ) {
-    const bodyText = await start.text();
-    throw new Error(
-      `${source.name} TinyFish returned a non-stream response (${
-        start.status
-      }, ${contentType}): ${truncateForError(bodyText)}`
-    );
-  }
-
-  if (!start.body) {
-    throw new Error(`${source.name} TinyFish run did not return a stream`);
-  }
-
-  const reader = start.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let result: unknown = null;
-
-  const handleEvent = (rawEvent: string) => {
-    const dataLines = safeArray<string>(rawEvent.split(/\r?\n/))
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trim())
-      .filter(Boolean);
-
-    if (dataLines.length === 0) {
-      return false;
+    if (!start.ok) {
+      const bodyText = await start.text();
+      throw new Error(
+        formatTinyFishHttpError({
+          source,
+          status: start.status,
+          bodyText,
+          contentType: start.headers.get("content-type"),
+        })
+      );
     }
 
-    const event = parseTinyFishStreamEvent(dataLines.join("\n"), source);
-    const eventType = stableText(event.type);
+    const contentType = start.headers.get("content-type");
+    if (
+      contentType &&
+      !contentType.toLowerCase().includes("text/event-stream")
+    ) {
+      const bodyText = await start.text();
+      throw new Error(
+        `${source.name} TinyFish returned a non-stream response (${
+          start.status
+        }, ${contentType}): ${truncateForError(bodyText)}`
+      );
+    }
 
-    if (eventType === "PROGRESS") {
-      const purpose = stableText(event.purpose);
-      if (purpose) {
-        addLog(purpose, "done", stableNumber(event.duration));
+    if (!start.body) {
+      throw new Error(`${source.name} TinyFish run did not return a stream`);
+    }
+
+    const reader = start.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result: unknown = null;
+
+    const handleEvent = (rawEvent: string) => {
+      const dataLines = safeArray<string>(rawEvent.split(/\r?\n/))
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .filter(Boolean);
+
+      if (dataLines.length === 0) {
+        return false;
       }
+
+      const event = parseTinyFishStreamEvent(dataLines.join("\n"), source);
+      const eventType = stableText(event.type);
+
+      if (eventType === "PROGRESS") {
+        const purpose = stableText(event.purpose);
+        if (purpose) {
+          addLog(`${source.name}: ${purpose}`, "done", stableNumber(event.duration));
+        }
+        return false;
+      }
+
+      if (eventType === "COMPLETE") {
+        result = event.resultJson ?? event.result_json ?? event.result;
+        return true;
+      }
+
+      if (eventType === "ERROR") {
+        const message =
+          stableText(event.message) ||
+          stableText(event.error) ||
+          `${source.name} agent failed`;
+        throw new Error(message);
+      }
+
       return false;
-    }
+    };
 
-    if (eventType === "COMPLETE") {
-      result = event.resultJson ?? event.result_json ?? event.result;
-      return true;
-    }
+    let done = false;
 
-    if (eventType === "ERROR") {
-      const message =
-        stableText(event.message) ||
-        stableText(event.error) ||
-        `${source.name} agent failed`;
-      throw new Error(message);
-    }
+    while (!done) {
+      const chunk = await reader.read();
+      done = chunk.done;
+      buffer += decoder.decode(chunk.value ?? new Uint8Array(), {
+        stream: !done,
+      });
 
-    return false;
-  };
+      const parts = buffer.split(/\r?\n\r?\n/);
+      buffer = parts.pop() ?? "";
 
-  let done = false;
-
-  while (!done) {
-    const chunk = await reader.read();
-    done = chunk.done;
-    buffer += decoder.decode(chunk.value ?? new Uint8Array(), { stream: !done });
-
-    const parts = buffer.split(/\r?\n\r?\n/);
-    buffer = parts.pop() ?? "";
-
-    for (const part of parts) {
-      if (handleEvent(part)) {
-        done = true;
-        break;
+      for (const part of parts) {
+        if (handleEvent(part)) {
+          done = true;
+          break;
+        }
       }
     }
+
+    if (!result && buffer.trim()) {
+      handleEvent(buffer);
+    }
+
+    if (!result) {
+      throw new Error(
+        `${source.name} TinyFish stream ended without a COMPLETE event`
+      );
+    }
+
+    const payload =
+      typeof result === "string" ? tryParseJson(result) ?? result : result;
+
+    const items: RawOpportunity[] = Array.isArray(payload)
+      ? (payload as RawOpportunity[])
+      : hasOpportunityArray(payload)
+      ? payload.opportunities
+      : [];
+
+    if (items.length === 0) {
+      throw new Error(
+        `${source.name} TinyFish returned a malformed success payload: ${truncateForError(
+          typeof result === "string" ? result : JSON.stringify(result)
+        )}`
+      );
+    }
+
+    return safeArray<RawOpportunity>(items)
+      .map((item) => normalizeOpportunity(item, source))
+      .filter(isNormalizedOpportunity)
+      .slice(0, MAX_OPPORTUNITIES_PER_SOURCE);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === "AbortError" ||
+        error.message.toLowerCase().includes("timeout"))
+    ) {
+      throw new Error(
+        `${source.name} timed out after ${Math.round(timeoutMs / 1000)}s`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  if (!result && buffer.trim()) {
-    handleEvent(buffer);
-  }
-
-  if (!result) {
-    throw new Error(`${source.name} TinyFish stream ended without a COMPLETE event`);
-  }
-
-  const payload =
-    typeof result === "string" ? tryParseJson(result) ?? result : result;
-
-  const items: RawOpportunity[] = Array.isArray(payload)
-    ? payload as RawOpportunity[]
-    : hasOpportunityArray(payload)
-    ? payload.opportunities
-    : [];
-
-  if (items.length === 0) {
-    throw new Error(
-      `${source.name} TinyFish returned a malformed success payload: ${truncateForError(
-        typeof result === "string" ? result : JSON.stringify(result)
-      )}`
-    );
-  }
-
-  return safeArray<RawOpportunity>(items)
-    .map((item) => normalizeOpportunity(item, source))
-    .filter(isNormalizedOpportunity);
 }
 
 function dedupeByKey<T extends { dedupeKey: string }>(items: T[]) {
@@ -588,7 +633,7 @@ function getMockFallback(): NormalizedOpportunity[] {
 
 export async function runMockGrantDiscovery(
   org: OrgLike = {}
-): Promise<NormalizedOpportunity[]> {
+): Promise<DiscoveryExecutionResult> {
   const config = getLiveDiscoveryConfig();
 
   console.info(
@@ -600,7 +645,19 @@ export async function runMockGrantDiscovery(
     console.warn(
       `[discovery] using mock fallback because live discovery is disabled by GRANTFISH_USE_LIVE_TINYFISH=${config.rawFlag || "<unset>"}`
     );
-    return getMockFallback();
+    const opportunities = getMockFallback();
+    return {
+      mode: "mock",
+      opportunities,
+      sourceOutcomes: [
+        {
+          sourceName: "Mock fallback",
+          status: "success",
+          opportunityCount: opportunities.length,
+          message: `Mock fallback returned ${opportunities.length} opportunities`,
+        },
+      ],
+    };
   }
 
   if (!config.hasKey) {
@@ -608,7 +665,19 @@ export async function runMockGrantDiscovery(
     console.warn(
       "[discovery] using mock fallback because TINYFISH_API_KEY is missing"
     );
-    return getMockFallback();
+    const opportunities = getMockFallback();
+    return {
+      mode: "mock",
+      opportunities,
+      sourceOutcomes: [
+        {
+          sourceName: "Mock fallback",
+          status: "success",
+          opportunityCount: opportunities.length,
+          message: `Mock fallback returned ${opportunities.length} opportunities`,
+        },
+      ],
+    };
   }
 
   addLog("Attempting live TinyFish discovery");
@@ -616,9 +685,43 @@ export async function runMockGrantDiscovery(
     `[discovery] attempting live TinyFish discovery via ${config.baseUrl}`
   );
 
+  const sources = safeArray<LiveSource>(LIVE_SOURCES);
+  sources.forEach((source) => addLog(`Starting ${source.name}`));
+
   const settled = await Promise.allSettled(
-    safeArray<LiveSource>(LIVE_SOURCES).map((source) => runTinyFishSource(source, org))
+    sources.map((source) => runTinyFishSource(source, org))
   );
+
+  const sourceOutcomes = settled.map<DiscoverySourceOutcome>((result, index) => {
+    const source = sources[index];
+
+    if (result.status === "fulfilled") {
+      const opportunityCount = result.value.length;
+      const message = `${source.name} returned ${opportunityCount} opportunit${
+        opportunityCount === 1 ? "y" : "ies"
+      }`;
+      addLog(message);
+      return {
+        sourceName: source.name,
+        status: "success",
+        opportunityCount,
+        message,
+      };
+    }
+
+    const errorMessage =
+      result.reason instanceof Error
+        ? result.reason.message
+        : String(result.reason);
+    const isTimeout = errorMessage.toLowerCase().includes("timeout");
+    addLog(errorMessage);
+    return {
+      sourceName: source.name,
+      status: isTimeout ? "timeout" : "error",
+      opportunityCount: 0,
+      message: errorMessage,
+    };
+  });
 
   const liveResults = settled.flatMap((result) =>
     result.status === "fulfilled" ? result.value : []
@@ -629,12 +732,14 @@ export async function runMockGrantDiscovery(
     console.info(
       `[discovery] live TinyFish discovery succeeded with ${liveResults.length} normalized opportunities before dedupe`
     );
-    return dedupeByKey(liveResults);
+    return {
+      mode: "live",
+      opportunities: dedupeByKey(liveResults),
+      sourceOutcomes,
+    };
   }
 
-  const errors = safeArray<PromiseSettledResult<NormalizedOpportunity[]>>(settled)
-    .filter((r): r is PromiseRejectedResult => r.status === "rejected")
-    .map((r) => r.reason instanceof Error ? r.reason.message : String(r.reason));
+  const errors = sourceOutcomes.map((outcome) => outcome.message);
 
   console.error(
     `[discovery] live TinyFish discovery failed across all sources: ${
