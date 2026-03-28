@@ -3,13 +3,16 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  MATCH_STAGE_OPTIONS,
   fetchDiscoveryLogs,
   fetchMatches,
   fetchOrganizations,
   runDiscovery,
+  updateMatchStage,
 } from "@/lib/api";
 import type { DiscoveryLogEntry } from "@/lib/api";
 import type { Match } from "@/lib/api";
+import type { MatchStage } from "@/lib/api";
 import type { Organization } from "@/types/organization";
 
 type CreateOrganizationForm = {
@@ -25,6 +28,49 @@ type ApiError = {
   error?: string;
 };
 
+const CSV_COLUMNS = [
+  "organization_name",
+  "title",
+  "funder_name",
+  "deadline_at",
+  "amount_min",
+  "amount_max",
+  "currency",
+  "source_name",
+  "application_url",
+  "fit_score",
+  "fit_reasons",
+  "pipeline_stage",
+  "notes",
+] as const;
+
+function formatCsvValue(value: string | number | null | undefined) {
+  const normalized = value == null ? "" : String(value);
+  return `"${normalized.replace(/"/g, '""')}"`;
+}
+
+function formatCurrencyRange(match: Match) {
+  if (typeof match.amountMin === "number" && typeof match.amountMax === "number") {
+    return `${match.currency || "USD"} ${match.amountMin}\u2013${match.amountMax}`;
+  }
+
+  if (typeof match.amountMax === "number") {
+    return `${match.currency || "USD"} ${match.amountMax}`;
+  }
+
+  if (typeof match.amountMin === "number") {
+    return `${match.currency || "USD"} ${match.amountMin}+`;
+  }
+
+  return "\u2014";
+}
+
+function formatStageValue(value: string | null | undefined): MatchStage | "" {
+  return MATCH_STAGE_OPTIONS.includes(value as MatchStage)
+    ? (value as MatchStage)
+    : "";
+}
+
 function isOrganization(
   value: Organization | ApiError
 ): value is Organization {
@@ -35,9 +81,11 @@ export default function DiscoverPage() {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [organizationId, setOrganizationId] = useState("");
   const [matches, setMatches] = useState<Match[]>([]);
+  const [hasLoadedMatches, setHasLoadedMatches] = useState(false);
   const [orgLoading, setOrgLoading] = useState(true);
   const [matchLoading, setMatchLoading] = useState(false);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
+  const [updatingStageId, setUpdatingStageId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [logs, setLogs] = useState<DiscoveryLogEntry[]>([]);
   const [lastDiscoveryCompletedAt, setLastDiscoveryCompletedAt] = useState<string | null>(
@@ -105,22 +153,15 @@ export default function DiscoverPage() {
     };
   }, [discoveryLoading]);
 
-  useEffect(() => {
-    if (!organizationId) {
-      setMatches([]);
-      return;
-    }
-
-    loadMatchesForOrganization(organizationId);
-  }, [organizationId]);
-
   async function loadMatchesForOrganization(orgId: string) {
     try {
       setMatchLoading(true);
       const data = await fetchMatches(orgId);
       setMatches(Array.isArray(data) ? data : []);
+      setHasLoadedMatches(true);
     } catch (err) {
       setMatches([]);
+      setHasLoadedMatches(false);
       setMessage(err instanceof Error ? err.message : "Failed to load matches");
     } finally {
       setMatchLoading(false);
@@ -227,6 +268,108 @@ export default function DiscoverPage() {
     }
   }
 
+  async function handleLoadSavedOpportunities() {
+    if (!organizationId) {
+      setMessage("Select an organization before loading saved opportunities.");
+      return;
+    }
+
+    try {
+      setMessage("");
+      await loadMatchesForOrganization(organizationId);
+      setMessage("Loaded saved opportunities for the selected organization.");
+    } catch {
+      // `loadMatchesForOrganization` already sets the error state.
+    }
+  }
+
+  async function handleStageChange(
+    opportunityId: string,
+    pipelineStage: MatchStage
+  ) {
+    if (!organizationId) {
+      setMessage("Select an organization before updating opportunity stage.");
+      return;
+    }
+
+    const previousMatches = matches;
+
+    try {
+      setUpdatingStageId(opportunityId);
+      setMessage("");
+      setMatches((current) =>
+        current.map((match) =>
+          match.opportunityId === opportunityId
+            ? { ...match, pipelineStage }
+            : match
+        )
+      );
+
+      const updated = await updateMatchStage({
+        orgId: organizationId,
+        opportunityId,
+        pipelineStage,
+      });
+
+      setMatches((current) =>
+        current.map((match) =>
+          match.opportunityId === updated.opportunityId
+            ? { ...match, pipelineStage: updated.pipelineStage }
+            : match
+        )
+      );
+      setMessage(`Updated opportunity stage to ${updated.pipelineStage}.`);
+    } catch (err) {
+      setMatches(previousMatches);
+      setMessage(err instanceof Error ? err.message : "Failed to update stage");
+    } finally {
+      setUpdatingStageId(null);
+    }
+  }
+
+  function handleExportCsv() {
+    if (matches.length === 0) {
+      return;
+    }
+
+    const rows = matches.map((match) => ({
+      organization_name: selectedOrganization?.name ?? "",
+      title: match.title ?? "",
+      funder_name: match.funderName ?? "",
+      deadline_at: match.deadlineAt ?? "",
+      amount_min: match.amountMin ?? "",
+      amount_max: match.amountMax ?? "",
+      currency: match.currency ?? "",
+      source_name: match.sourceName ?? "",
+      application_url: match.applicationUrl ?? "",
+      fit_score: match.score ?? "",
+      fit_reasons: Array.isArray(match.reasons) ? match.reasons.join("; ") : "",
+      pipeline_stage: match.pipelineStage ?? "",
+      notes: match.notes ?? "",
+    }));
+
+    const csvContent = [
+      CSV_COLUMNS.join(","),
+      ...rows.map((row) =>
+        CSV_COLUMNS.map((column) => formatCsvValue(row[column])).join(",")
+      ),
+    ].join("\n");
+
+    const blob = new Blob([csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10);
+
+    link.href = url;
+    link.download = `granthunter-matches-${date}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <main className="min-h-screen bg-white p-8 text-black">
       <div className="mx-auto max-w-6xl space-y-8">
@@ -251,6 +394,8 @@ export default function DiscoverPage() {
                 value={organizationId}
                 onChange={(e) => {
                   setOrganizationId(e.target.value);
+                  setMatches([]);
+                  setHasLoadedMatches(false);
                   setMessage("");
                 }}
                 disabled={orgLoading || organizations.length === 0}
@@ -311,21 +456,51 @@ export default function DiscoverPage() {
               >
                 {discoveryLoading ? "Running Discovery..." : "Run Discovery"}
               </button>
+              <button
+                type="button"
+                onClick={handleLoadSavedOpportunities}
+                disabled={matchLoading || discoveryLoading || !organizationId}
+                className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
+              >
+                {matchLoading ? "Loading Saved..." : "Load Saved Opportunities"}
+              </button>
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                disabled={!hasLoadedMatches || matches.length === 0}
+                className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
+              >
+                Export CSV
+              </button>
             </div>
 
-            <div className="min-h-[88px] overflow-y-auto rounded-lg bg-black p-3 font-mono text-xs text-green-400">
-              {logs.length > 0 ? (
-                logs.map((log, index) => (
-                  <div key={`${log.step}-${index}`}>
-                    {">"} {log.step}
-                    {typeof log.duration === "number"
-                      ? ` (${Math.round(log.duration)}ms)`
-                      : ""}
-                  </div>
-                ))
-              ) : (
-                <div>{">"} Discovery activity will appear here.</div>
-              )}
+            <div className="space-y-2 rounded-xl border border-black bg-black p-3 text-xs text-green-400">
+              <div className="flex items-center justify-between font-mono uppercase tracking-wide text-green-300">
+                <span>Discovery Trace</span>
+                <span>{logs.length} step{logs.length === 1 ? "" : "s"}</span>
+              </div>
+              <div className="min-h-[88px] max-h-56 overflow-y-auto font-mono">
+                {logs.length > 0 ? (
+                  logs.map((log, index) => (
+                    <div
+                      key={`${log.step}-${index}`}
+                      className="flex items-start justify-between gap-3 border-b border-white/10 py-1 last:border-b-0"
+                    >
+                      <div className="min-w-0">
+                        <div>{">"} {log.step}</div>
+                      </div>
+                      <div className="shrink-0 text-[11px] text-green-200">
+                        {log.status}
+                        {typeof log.duration === "number"
+                          ? ` | ${Math.round(log.duration)}ms`
+                          : ""}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div>{">"} Discovery activity will appear here.</div>
+                )}
+              </div>
             </div>
 
             {message ? (
@@ -447,14 +622,20 @@ export default function DiscoverPage() {
 
           {!organizationId ? (
             <div className="p-4 text-sm text-gray-600">
-              Select an organization to view matches.
+              Select an organization to review its summary, then run discovery
+              or load saved opportunities.
             </div>
           ) : matchLoading ? (
             <div className="p-4 text-sm text-gray-600">Loading matches...</div>
+          ) : !hasLoadedMatches ? (
+            <div className="p-4 text-sm text-gray-600">
+              No discovery results loaded yet. Run discovery or load saved
+              opportunities to see ranked results.
+            </div>
           ) : matches.length === 0 ? (
             <div className="p-4 text-sm text-gray-600">
-              No opportunities available yet. Run discovery to save
-              opportunities and see ranked results.
+              No saved opportunities are available for this organization yet.
+              Run discovery to see ranked opportunities.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -462,22 +643,72 @@ export default function DiscoverPage() {
                 <thead className="bg-gray-50 text-left">
                   <tr>
                     <th className="px-4 py-3">Title</th>
+                    <th className="px-4 py-3">Funder</th>
+                    <th className="px-4 py-3">Deadline</th>
+                    <th className="px-4 py-3">Amount</th>
                     <th className="px-4 py-3">Score</th>
+                    <th className="px-4 py-3">Stage</th>
                     <th className="px-4 py-3">Reasons</th>
+                    <th className="px-4 py-3">Source</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {matches.map((match) => (
-                    <tr key={match.opportunityId} className="align-top border-t">
-                      <td className="px-4 py-3">
-                        <div className="font-medium">{match.title}</div>
-                      </td>
-                      <td className="px-4 py-3 font-semibold">{match.score}</td>
-                      <td className="px-4 py-3">
-                        {match.reasons?.join(", ") || "—"}
-                      </td>
-                    </tr>
-                  ))}
+                  {matches.map((match) => {
+                    const stageValue = formatStageValue(match.pipelineStage);
+                    const deadline = match.deadlineAt
+                      ? new Date(match.deadlineAt).toLocaleDateString()
+                      : "—";
+
+                    return (
+                      <tr key={match.opportunityId} className="align-top border-t">
+                        <td className="px-4 py-3">
+                          <div className="font-medium">{match.title}</div>
+                          {match.applicationUrl ? (
+                            <a
+                              href={match.applicationUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-1 inline-block text-xs text-blue-600 underline"
+                            >
+                              Apply link
+                            </a>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3">{match.funderName || "—"}</td>
+                        <td className="px-4 py-3">{deadline}</td>
+                        <td className="px-4 py-3">{formatCurrencyRange(match)}</td>
+                        <td className="px-4 py-3 font-semibold">{match.score}</td>
+                        <td className="px-4 py-3">
+                          <select
+                            className="rounded-md border bg-white px-2 py-1"
+                            value={stageValue}
+                            onChange={(e) =>
+                              handleStageChange(
+                                match.opportunityId,
+                                e.target.value as MatchStage
+                              )
+                            }
+                            disabled={!organizationId || updatingStageId === match.opportunityId}
+                          >
+                            {stageValue === "" ? (
+                              <option value="" disabled>
+                                {match.pipelineStage || "unknown"}
+                              </option>
+                            ) : null}
+                            {MATCH_STAGE_OPTIONS.map((stage) => (
+                              <option key={stage} value={stage}>
+                                {stage}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-4 py-3">
+                          {match.reasons?.join(", ") || "—"}
+                        </td>
+                        <td className="px-4 py-3">{match.sourceName || "—"}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

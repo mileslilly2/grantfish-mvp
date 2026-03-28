@@ -32,8 +32,18 @@ export async function GET(req: Request) {
       SELECT
         o.id AS "opportunityId",
         o.title,
+        o.funder_name AS "funderName",
+        o.deadline_at AS "deadlineAt",
+        o.amount_min AS "amountMin",
+        o.amount_max AS "amountMax",
+        o.currency,
+        o.status,
+        o.application_url AS "applicationUrl",
+        o.source_name AS "sourceName",
         m.fit_score AS score,
-        m.fit_reasons AS reasons
+        m.fit_reasons AS reasons,
+        m.pipeline_stage AS "pipelineStage",
+        m.notes
       FROM opportunity_matches m
       JOIN opportunities o ON o.id = m.opportunity_id
       WHERE m.organization_profile_id = $1
@@ -49,6 +59,19 @@ export async function GET(req: Request) {
         title: String(row.title ?? ""),
         score: Number(row.score ?? 0),
         reasons: ensureReasonArray(row.reasons),
+        funderName: nullableString(row.funderName),
+        deadlineAt:
+          row.deadlineAt instanceof Date
+            ? row.deadlineAt.toISOString()
+            : nullableString(row.deadlineAt),
+        amountMin: nullableNumber(row.amountMin),
+        amountMax: nullableNumber(row.amountMax),
+        currency: nullableString(row.currency),
+        status: nullableString(row.status),
+        applicationUrl: nullableString(row.applicationUrl),
+        sourceName: nullableString(row.sourceName),
+        pipelineStage: nullableString(row.pipelineStage),
+        notes: nullableString(row.notes),
       }))
     );
   } catch (err) {
@@ -74,4 +97,26 @@ function ensureReasonArray(value: unknown): string[] {
   }
 
   return [];
+}
+
+function nullableString(value: unknown): string | null {
+  if (value == null) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return normalized ? normalized : null;
+}
+
+function nullableNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
 }
