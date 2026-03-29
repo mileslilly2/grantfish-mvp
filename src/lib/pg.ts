@@ -93,6 +93,24 @@ export async function ensureActiveAppSchema(): Promise<void> {
           UNIQUE (organization_profile_id, opportunity_id)
         );
 
+        CREATE TABLE IF NOT EXISTS discovery_runs (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          organization_profile_id uuid NOT NULL REFERENCES organization_profiles(id) ON DELETE CASCADE,
+          status text NOT NULL DEFAULT 'pending',
+          mode text,
+          summary text,
+          source_states jsonb NOT NULL DEFAULT '{}'::jsonb,
+          trace jsonb NOT NULL DEFAULT '[]'::jsonb,
+          discovered_count integer NOT NULL DEFAULT 0,
+          saved_count integer NOT NULL DEFAULT 0,
+          opportunity_ids uuid[] NOT NULL DEFAULT '{}'::uuid[],
+          error text,
+          started_at timestamptz,
+          completed_at timestamptz,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+
         DROP TRIGGER IF EXISTS trg_organization_profiles_updated_at ON organization_profiles;
         CREATE TRIGGER trg_organization_profiles_updated_at
         BEFORE UPDATE ON organization_profiles
@@ -108,6 +126,12 @@ export async function ensureActiveAppSchema(): Promise<void> {
         DROP TRIGGER IF EXISTS trg_opportunity_matches_updated_at ON opportunity_matches;
         CREATE TRIGGER trg_opportunity_matches_updated_at
         BEFORE UPDATE ON opportunity_matches
+        FOR EACH ROW
+        EXECUTE FUNCTION set_updated_at();
+
+        DROP TRIGGER IF EXISTS trg_discovery_runs_updated_at ON discovery_runs;
+        CREATE TRIGGER trg_discovery_runs_updated_at
+        BEFORE UPDATE ON discovery_runs
         FOR EACH ROW
         EXECUTE FUNCTION set_updated_at();
       `)
