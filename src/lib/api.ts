@@ -58,18 +58,48 @@ export const MATCH_STAGE_OPTIONS = [
 
 export type MatchStage = (typeof MATCH_STAGE_OPTIONS)[number];
 
-export type DiscoveryRunResult = {
+export type DiscoverySourceStatus =
+  | "pending"
+  | "queued"
+  | "running"
+  | "success"
+  | "empty"
+  | "timeout"
+  | "error"
+  | "cancelled";
+
+export type DiscoveryRunStartResult = {
+  runId: string;
   organizationId: string;
-  mode: "live" | "mock";
+  status: "pending" | "running" | "failed" | "partial";
+  summary: string;
+};
+
+export type DiscoveryRunStatus = {
+  runId: string;
+  organizationId: string;
+  status: "pending" | "running" | "completed" | "failed" | "partial";
+  mode: "live" | "mock" | null;
+  summary: string;
+  sourceOutcomes: Array<{
+    sourceName: string;
+    status: DiscoverySourceStatus;
+    opportunityCount: number;
+    message: string;
+    upstreamRunId: string | null;
+    upstreamStatus: string | null;
+    lastCheckedAt: string | null;
+  }>;
+  trace: DiscoveryLogEntry[];
   discoveredCount: number;
   savedCount: number;
   opportunityIds: string[];
-  sourceOutcomes?: Array<{
-    sourceName: string;
-    status: "success" | "timeout" | "error";
-    opportunityCount: number;
-    message: string;
-  }>;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  isTerminal: boolean;
 };
 
 export type DiscoveryLogEntry = {
@@ -133,7 +163,7 @@ export async function updateMatchStage(params: {
 
 export async function runDiscovery(
   organizationId: string
-): Promise<DiscoveryRunResult> {
+): Promise<DiscoveryRunStartResult> {
   const res = await fetch("/api/discovery/run", {
     method: "POST",
     headers: {
@@ -146,7 +176,7 @@ export async function runDiscovery(
   const parsed = tryParseJsonResponseBody(
     bodyText,
     res.headers.get("content-type")
-  ) as (DiscoveryRunResult & { error?: string }) | undefined;
+  ) as (DiscoveryRunStartResult & { error?: string }) | undefined;
 
   if (!res.ok) {
     if (parsed && typeof parsed.error === "string" && parsed.error.trim()) {
@@ -159,6 +189,34 @@ export async function runDiscovery(
 
   if (!parsed) {
     throw new Error("Discovery returned a non-JSON success response");
+  }
+
+  return parsed;
+}
+
+export async function fetchDiscoveryRunStatus(
+  runId: string
+): Promise<DiscoveryRunStatus> {
+  const res = await fetch(`/api/discovery/run?id=${encodeURIComponent(runId)}`, {
+    cache: "no-store",
+  });
+
+  const bodyText = await res.text();
+  const parsed = tryParseJsonResponseBody(
+    bodyText,
+    res.headers.get("content-type")
+  ) as (DiscoveryRunStatus & { error?: string }) | undefined;
+
+  if (!res.ok) {
+    if (parsed && typeof parsed.error === "string" && parsed.error.trim()) {
+      throw new Error(parsed.error);
+    }
+
+    throw new Error(bodyText.trim() || "Failed to fetch discovery run status");
+  }
+
+  if (!parsed) {
+    throw new Error("Discovery status returned a non-JSON response");
   }
 
   return parsed;

@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   MATCH_STAGE_OPTIONS,
-  fetchDiscoveryLogs,
+  fetchDiscoveryRunStatus,
   fetchMatches,
   fetchOrganizations,
   runDiscovery,
@@ -86,11 +86,13 @@ export default function DiscoverPage() {
   const [matchLoading, setMatchLoading] = useState(false);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [updatingStageId, setUpdatingStageId] = useState<string | null>(null);
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [logs, setLogs] = useState<DiscoveryLogEntry[]>([]);
   const [lastDiscoveryCompletedAt, setLastDiscoveryCompletedAt] = useState<string | null>(
     null
   );
+  const lastSavedCountRef = useRef(0);
   const [createOrgForm, setCreateOrgForm] = useState<CreateOrganizationForm>({
     name: "",
     entityType: "nonprofit",
@@ -127,31 +129,55 @@ export default function DiscoverPage() {
   }, []);
 
   useEffect(() => {
-    if (!discoveryLoading) {
+    if (!currentRunId || !organizationId) {
       return;
     }
 
     let cancelled = false;
+    const runId = currentRunId;
 
-    async function loadLogs() {
+    async function pollRun() {
       try {
-        const data = await fetchDiscoveryLogs();
+        const data = await fetchDiscoveryRunStatus(runId);
         if (!cancelled) {
-          setLogs(Array.isArray(data) ? data : []);
+          setLogs(Array.isArray(data.trace) ? data.trace : []);
+          setMessage(data.summary || "");
+
+          if (data.savedCount > lastSavedCountRef.current) {
+            lastSavedCountRef.current = data.savedCount;
+            await loadMatchesForOrganization(organizationId);
+          }
+
+          if (data.isTerminal) {
+            setDiscoveryLoading(false);
+            setCurrentRunId(null);
+            setLastDiscoveryCompletedAt(
+              data.completedAt ?? new Date().toISOString()
+            );
+
+            if (data.savedCount === 0) {
+              setMatches([]);
+              setHasLoadedMatches(true);
+            }
+          }
         }
       } catch {
-        // Ignore polling failures while discovery is running.
+        if (!cancelled) {
+          setDiscoveryLoading(false);
+          setCurrentRunId(null);
+          setMessage("Failed to poll discovery run status");
+        }
       }
     }
 
-    loadLogs();
-    const interval = window.setInterval(loadLogs, 800);
+    pollRun();
+    const interval = window.setInterval(pollRun, 1200);
 
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [discoveryLoading]);
+  }, [currentRunId, organizationId]);
 
   async function loadMatchesForOrganization(orgId: string) {
     try {
@@ -244,47 +270,22 @@ export default function DiscoverPage() {
       setDiscoveryLoading(true);
       setMessage("");
       setLogs([]);
+      setMatches([]);
+      setHasLoadedMatches(false);
+      setLastDiscoveryCompletedAt(null);
+      lastSavedCountRef.current = 0;
 
       const result = await runDiscovery(organizationId);
-      await loadMatchesForOrganization(organizationId);
-      const latestLogs = await fetchDiscoveryLogs().catch(() => []);
-      setLogs(Array.isArray(latestLogs) ? latestLogs : []);
-      setLastDiscoveryCompletedAt(new Date().toISOString());
-
-      const modeLabel =
-        result.mode === "live"
-          ? "live TinyFish discovery"
-          : "mock fallback discovery";
-      const timedOutSourceCount =
-        result.sourceOutcomes?.filter((outcome) => outcome.status === "timeout")
-          .length ?? 0;
-      const failedSourceCount =
-        result.sourceOutcomes?.filter((outcome) => outcome.status === "error")
-          .length ?? 0;
-      const summaryParts = [
-        `Completed ${modeLabel}.`,
-        `Discovered ${result.discoveredCount} opportunities and saved ${result.savedCount}.`,
-      ];
-
-      if (timedOutSourceCount > 0) {
-        summaryParts.push(
-          `${timedOutSourceCount} source${timedOutSourceCount === 1 ? "" : "s"} timed out.`
-        );
-      }
-
-      if (failedSourceCount > 0) {
-        summaryParts.push(
-          `${failedSourceCount} source${failedSourceCount === 1 ? "" : "s"} failed.`
-        );
-      }
-
-      setMessage(summaryParts.join(" "));
+      setCurrentRunId(result.runId);
+      setMessage(result.summary);
+      setLogs([{ step: result.summary, status: "done" }]);
     } catch (err) {
       setMessage(
         err instanceof Error ? err.message : "Failed to run discovery"
       );
-    } finally {
       setDiscoveryLoading(false);
+    } finally {
+      // Polling owns the rest of the lifecycle.
     }
   }
 
