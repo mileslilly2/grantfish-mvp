@@ -1,8 +1,20 @@
 # GrantHunter
 
+## 🚀 Demo (Start Here)
+
+1. Go to /discover  
+2. Create or select an organization  
+3. Click "Run Discovery"  
+4. The agent browses real grant websites and returns ranked opportunities  
+
+API option:
+POST /api/discovery/run
+
 ## 1. Project summary
 
 GrantHunter is a Next.js App Router app for nonprofit grant discovery, persistence, ranking, and review.
+
+This system performs real browser-based tasks using an agent, not just API queries.
 
 The current runtime is discovery-first:
 
@@ -14,6 +26,8 @@ The current runtime is discovery-first:
 Discovery is asynchronous. `POST /api/discovery/run` starts a run quickly and returns `202 Accepted` with a `runId`, and the client polls `GET /api/discovery/run?id=...` for status, trace updates, and saved result counts.
 
 When live TinyFish mode is enabled, the app starts upstream TinyFish runs per source, persists those upstream run ids, and later reconciles completed upstream results into saved opportunities and org-specific matches. When live mode is not enabled, the same route falls back to mock discovery and still persists results through the same active SQL path.
+
+This replaces hours of manual grant searching with automated discovery.
 
 ## 2. Live demo / app entry
 
